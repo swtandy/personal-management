@@ -90,6 +90,14 @@ def patch(path, payload):
     return r.json()
 
 
+def delete(path, payload=None):
+    """DELETE with optional JSON payload."""
+    url = path if path.startswith("http") else f"{BASE_URL}{path}"
+    r = requests.delete(url, headers=_headers(), json=payload or {})
+    _check(r, f"DELETE {path}")
+    return r.json() if r.content else {}
+
+
 def rate_limit_pause(min_remaining=100):
     """Check rate limit and sleep if we're running low."""
     info = get("/rate_limit")

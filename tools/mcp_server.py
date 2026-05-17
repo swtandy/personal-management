@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
-from github_client import get_all, get, post, patch
+from github_client import get_all, get, post, patch, delete
 
 mcp = FastMCP("GitHub Personal Management")
 
@@ -174,6 +174,83 @@ def close_issue(repo: str, issue_number: int, comment: str = None) -> str:
         post(f"/repos/{repo}/issues/{issue_number}/comments", {"body": comment})
     patch(f"/repos/{repo}/issues/{issue_number}", {"state": "closed"})
     return f"Closed #{issue_number} in {repo}."
+
+
+# ---------------------------------------------------------------------------
+# Sub-issues (parent/child relationships)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_sub_issues(repo: str, issue_number: int) -> str:
+    """
+    List all sub-issues (children) of an issue.
+
+    Args:
+        repo: owner/repo
+        issue_number: parent issue number
+    """
+    subs = get_all(f"/repos/{repo}/issues/{issue_number}/sub_issues")
+    if not subs:
+        return f"#{issue_number} has no sub-issues."
+    lines = []
+    for s in subs:
+        labels = ", ".join(l["name"] for l in s.get("labels", []))
+        label_str = f"  [{labels}]" if labels else ""
+        lines.append(f"  #{s['number']} [{s['state']}] {s['title']}{label_str}")
+    return f"#{issue_number} has {len(subs)} sub-issue(s):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def get_parent_issue(repo: str, issue_number: int) -> str:
+    """
+    Get the parent issue of a sub-issue, if any.
+
+    Args:
+        repo: owner/repo
+        issue_number: child issue number
+    """
+    parent = get(f"/repos/{repo}/issues/{issue_number}/parent")
+    if not parent:
+        return f"#{issue_number} has no parent issue."
+    labels = ", ".join(l["name"] for l in parent.get("labels", []))
+    return f"Parent of #{issue_number}: #{parent['number']} [{parent['state']}] {parent['title']}  [{labels}]\n{parent['html_url']}"
+
+
+@mcp.tool()
+def add_sub_issue(repo: str, parent_issue_number: int, sub_issue_number: int) -> str:
+    """
+    Make an issue a sub-issue (child) of another issue.
+
+    Args:
+        repo: owner/repo
+        parent_issue_number: the parent issue number
+        sub_issue_number: the child issue number
+    """
+    # API requires the internal issue ID, not the number — look it up
+    child = get(f"/repos/{repo}/issues/{sub_issue_number}")
+    result = post(
+        f"/repos/{repo}/issues/{parent_issue_number}/sub_issues",
+        {"sub_issue_id": child["id"]},
+    )
+    return f"#{sub_issue_number} is now a sub-issue of #{parent_issue_number}.\n{result.get('html_url', '')}"
+
+
+@mcp.tool()
+def remove_sub_issue(repo: str, parent_issue_number: int, sub_issue_number: int) -> str:
+    """
+    Remove a sub-issue relationship (does not delete the issue).
+
+    Args:
+        repo: owner/repo
+        parent_issue_number: the parent issue number
+        sub_issue_number: the child issue number to detach
+    """
+    child = get(f"/repos/{repo}/issues/{sub_issue_number}")
+    delete(
+        f"/repos/{repo}/issues/{parent_issue_number}/sub_issue",
+        {"sub_issue_id": child["id"]},
+    )
+    return f"#{sub_issue_number} removed from sub-issues of #{parent_issue_number}."
 
 
 # ---------------------------------------------------------------------------
