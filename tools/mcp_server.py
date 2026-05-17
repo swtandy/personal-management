@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 from github_client import get_all, get, post, patch, delete
+from issue_tree import build_issue_tree, format_tree
 
 mcp = FastMCP("GitHub Personal Management")
 
@@ -251,6 +252,49 @@ def remove_sub_issue(repo: str, parent_issue_number: int, sub_issue_number: int)
         {"sub_issue_id": child["id"]},
     )
     return f"#{sub_issue_number} removed from sub-issues of #{parent_issue_number}."
+
+
+# ---------------------------------------------------------------------------
+# Issue tree
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_issue_tree(repo: str, state: str = "all") -> str:
+    """
+    Return the full issue hierarchy as a JSON dict.
+
+    The returned object has three keys:
+      issues — flat dict keyed by issue number (number, title, state, labels,
+                url, parent, children)
+      roots  — list of issue numbers with no parent
+      tree   — same data nested recursively (children embedded)
+
+    Args:
+        repo: owner/repo
+        state: open | closed | all (default: all)
+    """
+    import json
+    data = build_issue_tree(repo, state)
+    # Return without the raw 'issues' flat dict to keep the response concise —
+    # callers that need lookup-by-number can reconstruct it from tree + roots.
+    return json.dumps(
+        {"repo": data["repo"], "total": data["total"], "roots": data["roots"], "tree": data["tree"]},
+        indent=2,
+    )
+
+
+@mcp.tool()
+def print_issue_tree(repo: str, state: str = "all") -> str:
+    """
+    Return a human-readable ASCII tree of the issue hierarchy.
+
+    Args:
+        repo: owner/repo
+        state: open | closed | all (default: all)
+    """
+    data = build_issue_tree(repo, state)
+    header = f"{repo}  ({data['total']} issues)\n"
+    return header + format_tree(data)
 
 
 # ---------------------------------------------------------------------------
