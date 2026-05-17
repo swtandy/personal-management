@@ -53,14 +53,28 @@ Scripts can also be run with system `pip3`/`python3` for the CLI tools (Python 3
 | `create_label(repo, name, color, description)` | Create a label |
 | `migrate_issues(source, dest, dry_run, state)` | Migrate issues — always dry_run=true first |
 
-### Adding to Claude co-work
+### Adding to Claude for Desktop
 
-1. Open **claude.ai → Settings → Integrations → Add MCP Server**
-2. Set:
-   - **Name**: GitHub Personal Management
-   - **Type**: Local (stdio)
-   - **Command**: `/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/.venv/bin/python3.13`
-   - **Args**: `/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/tools/mcp_server.py`
+Local stdio MCP servers require **Claude for Desktop** (the Mac app) — the claude.ai web interface only supports remotely-hosted MCP servers.
+
+1. In Claude for Desktop: **Settings → Developer → Edit Config**  
+   (or open `~/Library/Application Support/Claude/claude_desktop_config.json` directly)
+
+2. Add:
+```json
+{
+  "mcpServers": {
+    "github-personal-management": {
+      "command": "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/.venv/bin/python3.13",
+      "args": [
+        "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/tools/mcp_server.py"
+      ]
+    }
+  }
+}
+```
+
+3. Fully quit and relaunch Claude for Desktop. The GitHub tools will appear in chat.
 
 ---
 
