@@ -69,6 +69,10 @@ def build_issue_tree(repo: str, state: str = "all") -> dict:
                 }
                 issues[number]["children"].append(child_num)
 
+    # Sort children lists in the flat dict so callers don't have to
+    for issue in issues.values():
+        issue["children"].sort()
+
     roots = sorted(n for n, i in issues.items() if i["parent"] is None)
 
     def _node(number):
