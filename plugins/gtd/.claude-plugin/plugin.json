@@ -1,0 +1,8 @@
+{
+  "name": "gtd",
+  "description": "GTD project and workflow management for Scott T's personal management. Provides gtd-mgmt for GitHub Project issue operations and gtd-workflow for GTD planning, review, and next-action decisions.",
+  "version": "1.2.0",
+  "author": {
+    "name": "swtandy"
+  }
+}

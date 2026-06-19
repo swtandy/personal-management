@@ -1,12 +1,12 @@
 # CLAUDE.md — SWT Personal Management
 
-This file is read automatically by Claude Code at session start. Paste it into Claude co-work to sync context between the two environments.
+This file is read automatically by Claude Code at session start.
 
 ---
 
 ## Project Purpose
 
-A personal management operating system for Scott Tandy (swtandy) built on GitHub Issues + Python tooling. The goal is to consolidate life/project tracking into a single GitHub repo (`swtandy/personal-management`) rather than scattered repos.
+A personal GTD operating system for Scott Tandy (swtandy) built on GitHub Issues + MCP tooling. All interaction is agent-managed via MCP — no CLI scripts. The goal is to consolidate personal life tracking into a single GitHub repo (`swtandy/personal-management`) with structured work logs, GTD labels, Project V2 fields, and cross-session handoffs.
 
 ---
 
@@ -14,17 +14,22 @@ A personal management operating system for Scott Tandy (swtandy) built on GitHub
 
 | Repo | Role |
 |---|---|
-| `swtandy/personal-management` | **Destination** — the consolidated personal OS |
-| `swtandy/openclawstuff` | **Source** — original issue tracker, 22 issues (deck project at 85 Joaquin Road) |
+| `swtandy/personal-management` | Primary — consolidated personal OS |
+| `swtandy/openclawstuff` | Legacy source — 22 issues migrated, kept for reference |
 
 GitHub username: `swtandy`  
 Token: stored in `.env` (gitignored — never committed)
+
+GitHub Project: **Personal Management** — Project #2  
+URL: `https://github.com/users/swtandy/projects/2`  
+Project ID: `PVT_kwHOAdx20s4BbJkA`  
+Fields: Status (Backlog/In Progress/Blocked/Done), Priority (P1–P4), When (Today/This Week/This Month/This Quarter/Someday/Maybe)
 
 ---
 
 ## Local Setup
 
-Requires Python 3.10+. Use the project venv (Python 3.13 via Homebrew):
+Requires Python 3.13 (Homebrew). Use the project venv:
 
 ```bash
 cd ~/Documents/Claude/Projects/SWT\ Personal\ Management
@@ -32,90 +37,138 @@ python3.13 -m venv .venv          # first time only
 .venv/bin/pip install -r requirements.txt
 ```
 
-Scripts can also be run with system `pip3`/`python3` for the CLI tools (Python 3.9), but the MCP server requires the `.venv`.
+The MCP server (`agents/gtd_mgmt_mcp_server.py`) is the only entry point — there are no CLI scripts.
 
 ---
 
-## MCP Server — Claude co-work integration
+## Architecture
 
-`tools/mcp_server.py` exposes GitHub tools directly to Claude co-work via MCP. Co-work can call these without any copy-paste:
+```
+config.py              ← centralised tunables (GITHUB_USER, GITHUB_PROJECT_NUMBER, etc.)
+github_client.py       ← GraphQL + REST API client, work-log parser
+agents/
+  gtd_mgmt_mcp_server.py  ← 24-tool FastMCP server (mediates through GUI)
+  project_gui.py           ← Tkinter read-only GUI (auto-launched, optional)
+utils/                 ← helpers (currently empty)
+```
+
+The GUI (`project_gui.py`) acts as a local data cache for the MCP server. It launches on demand via `launch_gui` and is not required for pure agent operation — most tools will auto-launch it if needed. All edits go through MCP tools, never through the GUI directly.
+
+---
+
+## MCP Server Tools (`agents/gtd_mgmt_mcp_server.py`)
 
 | Tool | What it does |
 |---|---|
-| `list_repos()` | All repos with open issue counts |
-| `list_issues(repo, state)` | Issues in a repo (open/closed/all) |
-| `get_issue(repo, number)` | Full issue detail + comments |
-| `create_issue(repo, title, body, labels)` | Create a new issue |
-| `update_issue(repo, number, ...)` | Update title, body, state, or labels |
-| `add_comment(repo, number, body)` | Add a comment |
-| `close_issue(repo, number, comment)` | Close, with optional comment |
-| `list_labels(repo)` | All labels in a repo |
-| `create_label(repo, name, color, description)` | Create a label |
-| `migrate_issues(source, dest, dry_run, state)` | Migrate issues — always dry_run=true first |
+| `gui_status()` | Check GUI and MCP server state |
+| `launch_gui()` | Start the Tkinter GUI process |
+| `load_default_project()` | Fetch and display configured GitHub Project |
+| `refresh()` | Reload project state |
+| `search_project_items(query)` | Full-text search across all project items |
+| `find_issue(issue_number, repo)` | Locate exact issue by number |
+| `get_issue_context(issue_number, repo)` | Full issue + comments + project state |
+| `resume_from_issue(repo, issue_number)` | Full resume context with work logs, blockers, next action |
+| `get_latest_work_log(repo, issue_number)` | Parse latest structured work-log comment |
+| `resume_project(query)` | Resume by text query (returns candidates) |
+| `create_resume_handoff(repo, issue_number)` | Generate workdown file + post as GitHub comment |
+| `append_work_log(repo, issue_number, ...)` | Add structured work-log comment with all GTD fields |
+| `add_comment(repo, issue_number, body)` | Post a plain comment |
+| `update_issue_body(repo, issue_number, body)` | Rewrite issue description |
+| `create_issue(repo, title, body, labels, status, priority)` | Create issue, add to Project, set fields |
+| `capture_issue(repo, title, ...)` | Capture inbox item with source context |
+| `add_labels(issue_number, repo, labels)` | Ensure and apply labels |
+| `set_project_field(issue_number, repo, field_name, option_name)` | Set Status/Priority/When via GraphQL |
+| `set_issue_parent(child_issue_number, child_repo, parent_issue_number, parent_repo)` | Set sub-issue hierarchy |
+| `organize_issue(issue_number, repo, ...)` | Combined label/field/parent update in one call |
+| `bulk_organize_issues(items, ..., dry_run)` | Batch updates — always dry_run=True first |
+| `close_issue(repo, issue_number)` | Mark issue closed |
+| `gui_command(command)` | Direct HTTP API to GUI (debugging) |
+| `stop_gui()` | Terminate GUI process |
 
-### Adding to Claude for Desktop
+---
 
-Local stdio MCP servers require **Claude for Desktop** (the Mac app) — the claude.ai web interface only supports remotely-hosted MCP servers.
+## Skills
 
-1. In Claude for Desktop: **Settings → Developer → Edit Config**  
-   (or open `~/Library/Application Support/Claude/claude_desktop_config.json` directly)
+Two skills — each exists for Claude Code and Codex CLI:
 
+| Skill | Claude Code | Codex |
+|---|---|---|
+| **gtd-mgmt** | `.claude/commands/gtd-mgmt.md` | `.codex/skills/gtd_mgmt/SKILL.md` |
+| **gtd-workflow** | `.claude/commands/gtd-workflow.md` | `.codex/skills/gtd_workflow/SKILL.md` |
+
+Deploy skills to both runtimes:
+```bash
+bash scripts/sync_skills.sh
+```
+
+---
+
+## MCP Server Setup
+
+### Claude Code (project-scoped, auto-loaded)
+
+`.mcp.json` at the repo root registers the server automatically when Claude Code opens this directory.
+
+### Claude for Desktop
+
+1. **Settings → Developer → Edit Config** (or open `~/Library/Application Support/Claude/claude_desktop_config.json`)
 2. Add:
 ```json
 {
   "mcpServers": {
-    "github-personal-management": {
+    "gtd_mgmt": {
       "command": "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/.venv/bin/python3.13",
-      "args": [
-        "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/tools/mcp_server.py"
-      ]
+      "args": ["/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/agents/gtd_mgmt_mcp_server.py"],
+      "cwd": "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management"
     }
   }
 }
 ```
+3. Fully quit and relaunch Claude for Desktop.
 
-3. Fully quit and relaunch Claude for Desktop. The GitHub tools will appear in chat.
-
----
-
-## CLI Tools Reference (`/tools`)
-
-All scripts load `.env` from the project root automatically via `github_client.py`.
-
-| Script | Usage |
-|---|---|
-| `list_repos.py` | `python3 tools/list_repos.py` |
-| `list_issues.py` | `python3 tools/list_issues.py swtandy/openclawstuff [--state open\|closed\|all] [--json]` |
-| `create_repo.py` | `python3 tools/create_repo.py` — safe to re-run, checks first |
-| `migrate_issues.py` | `python3 tools/migrate_issues.py --source <repo> --dest <repo> [--dry-run] [--state all] [--label-filter <label>]` |
-
-**Always `--dry-run` before a real migration.**
+Or just run `bash scripts/sync_skills.sh` — it updates the desktop config automatically.
 
 ---
 
-## Current Status (updated 2026-05-17)
+## Current Status (updated 2026-06-19)
 
 ### Done
 - [x] Git repo initialized, pushed to `https://github.com/swtandy/personal-management`
-- [x] `swtandy/personal-management` created on GitHub
-- [x] All 22 issues migrated from `swtandy/openclawstuff` → `swtandy/personal-management` (labels synced, source attribution in each issue footer)
-- [x] Python venv at `.venv/` (Python 3.13) with all deps including `mcp`
-- [x] MCP server `tools/mcp_server.py` — 10 tools ready for co-work integration
-- [x] CLI toolkit: `github_client.py`, `list_repos.py`, `list_issues.py`, `create_repo.py`, `migrate_issues.py`
+- [x] 65 issues migrated and linked to GitHub Project V2
+- [x] Python venv at `.venv/` (Python 3.13)
+- [x] Ported gtd-agents architecture: `config.py`, `github_client.py`, 24-tool MCP server, GUI, dual-platform skills, sync script
+- [x] GitHub Project V2 "Personal Management" (#2) with Status, Priority, When fields
+- [x] Skill files: `.claude/commands/` and `.codex/skills/` for both gtd-mgmt and gtd-workflow
+- [x] `plugins/gtd/` plugin structure and `.mcp.json` project-scoped auto-registration
+- [x] `[Scott T] Inbox` created as issue #70; wired up in MCP server + all skill files
+- [x] Areas of Focus defined (#71–#76); existing EPICs re-parented; skill files updated
+
+### Areas Of Focus
+
+| Issue | Area | Covers |
+|---|---|---|
+| #71 | Home And Property | Deck at 85 Joaquin Road, home maintenance, repairs, garden |
+| #72 | Workshop And Making | Woodworking, tools, fabrication projects |
+| #73 | Health And Wellbeing | Medical, eye care, fitness, diet, mental health |
+| #74 | Travel And Leisure | Vacations, timeshares (Westin Maui), trips, events |
+| #75 | Career And Finance | Work, skills, learning, budgeting, investments, taxes |
+| #76 | Relationships And Social | Family, friends, community, social commitments |
 
 ### Not yet done
-- [ ] Add MCP server to claude.ai co-work (see MCP Server section above)
-- [ ] Decide what to do with `swtandy/openclawstuff` — close issues, archive repo, or leave as-is
-- [ ] Define what other life areas go into `personal-management` beyond the deck project
-
-### Open decisions
-- Should the deck issues (#1–22) be reorganized (milestones, projects board) now that they're in the new repo?
-- Are there other source repos to consolidate?
+- [ ] Run `bash scripts/sync_skills.sh` to deploy skills to Claude Code and Codex runtimes
+- [ ] Install dependencies: `.venv/bin/pip install -r requirements.txt` (adds `customtkinter`)
+- [ ] Triage open issues — assign Status/Priority/When in the Project
+- [ ] Decide what to do with `swtandy/openclawstuff` — archive or leave as-is
+- [x] EPIC: Personal (#34) dissolved — #54 → #73, #60 → #74, #34 closed
 
 ---
 
-## Keeping Claude Code + Claude co-work in sync
+## Work Log Format
 
-- Claude Code reads this file automatically each session
-- For co-work: paste the **Current Status** section (or the whole file) at the start of the session
-- When either Claude makes progress, update the **Current Status** section above
+Structured session notes use a marker so future sessions can find them:
+
+```md
+<!-- gtd_mgmt:work-log:v1 -->
+```
+
+Always use `append_work_log` — not ad hoc comments — so resume prompts reliably locate the latest session state.

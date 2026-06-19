@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gtd_mgmt": {
+      "command": "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/.venv/bin/python3.13",
+      "args": ["/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management/agents/gtd_mgmt_mcp_server.py"],
+      "cwd": "/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management"
+    }
+  }
+}

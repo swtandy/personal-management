@@ -1,249 +1,209 @@
-"""
-Tests for github_client.py.
+import os
+import unittest
+from unittest.mock import Mock, patch
 
-Mocks requests.* directly — no network, no credentials needed.
-"""
+os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
-import sys
-import pytest
-from unittest.mock import patch, MagicMock, call
-
-from conftest import make_response
+from github_client import GitHubClient, WORK_LOG_MARKER, build_field_map, format_work_log_comment, parse_work_log_body
 
 
-# ---------------------------------------------------------------------------
-# get_all — pagination
-# ---------------------------------------------------------------------------
+class GitHubClientTests(unittest.TestCase):
+    def test_set_issue_parent_sends_parent_as_issue_and_child_as_sub_issue(self):
+        client = GitHubClient(token="test-token")
+        client.graphql = Mock(return_value={})
 
-class TestGetAll:
-    def test_single_page_no_link_header(self):
-        batch = [{"id": 1}, {"id": 2}]
-        with patch("github_client.requests.get", return_value=make_response(batch)):
-            from github_client import get_all
-            result = get_all("/repos/owner/repo/issues")
-        assert result == batch
+        client.set_issue_parent("child-node-id", "parent-node-id")
 
-    def test_multi_page_follows_next_link(self):
-        page1 = [{"id": 1}]
-        page2 = [{"id": 2}]
-        responses = [
-            make_response(page1, link_next="https://api.github.com/repos/owner/repo/issues?page=2"),
-            make_response(page2),
-        ]
-        with patch("github_client.requests.get", side_effect=responses):
-            from github_client import get_all
-            result = get_all("/repos/owner/repo/issues")
-        assert result == [{"id": 1}, {"id": 2}]
+        mutation, variables = client.graphql.call_args.args
+        self.assertIn("issueId: $parentId", mutation)
+        self.assertIn("subIssueId: $childId", mutation)
+        self.assertEqual(
+            variables,
+            {"parentId": "parent-node-id", "childId": "child-node-id"},
+        )
 
-    def test_stops_on_empty_batch(self):
-        responses = [
-            make_response([{"id": 1}], link_next="https://api.github.com/next"),
-            make_response([]),
-        ]
-        with patch("github_client.requests.get", side_effect=responses):
-            from github_client import get_all
-            result = get_all("/some/path")
-        assert result == [{"id": 1}]
+    def test_parse_item_includes_parent_repo_for_cross_repo_trees(self):
+        client = GitHubClient(token="test-token")
+        parsed = client.parse_item({
+            "id": "project-item-id",
+            "fieldValues": {"nodes": []},
+            "content": {
+                "id": "issue-id",
+                "number": 2,
+                "title": "Child",
+                "repository": {"nameWithOwner": "owner/child-repo"},
+                "labels": {"nodes": []},
+                "assignees": {"nodes": []},
+                "parent": {
+                    "number": 1,
+                    "title": "Parent",
+                    "repository": {"nameWithOwner": "owner/parent-repo"},
+                },
+                "trackedIssues": {"nodes": []},
+            },
+        })
 
-    def test_three_pages(self):
-        pages = [[{"id": i}] for i in range(3)]
-        responses = [
-            make_response(pages[0], link_next="https://api.github.com/page2"),
-            make_response(pages[1], link_next="https://api.github.com/page3"),
-            make_response(pages[2]),
-        ]
-        with patch("github_client.requests.get", side_effect=responses):
-            from github_client import get_all
-            result = get_all("/some/path")
-        assert len(result) == 3
-        assert [r["id"] for r in result] == [0, 1, 2]
+        self.assertEqual(parsed["parent"], (1, "Parent"))
+        self.assertEqual(parsed["parent_repo"], "owner/parent-repo")
 
+    def test_format_work_log_comment_includes_resume_sections_and_marker(self):
+        body = format_work_log_comment(
+            work_completed="- Built MVP",
+            current_state="- Tests pass",
+            next_steps="- Try it on real issue",
+            codex_project="- SWT Personal Management",
+            codex_project_path="- /Users/scotttandy/Documents/Claude/Projects/SWT Personal Management",
+            related_local_workspaces="- /Users/scotttandy/Documents/Claude/Projects/SWT Personal Management",
+            related_github_repos="- swtandy/personal-management",
+        )
 
-# ---------------------------------------------------------------------------
-# Error handling
-# ---------------------------------------------------------------------------
+        self.assertIn(WORK_LOG_MARKER, body)
+        self.assertIn("## Work Completed", body)
+        self.assertIn("## Current State", body)
+        self.assertIn("## Next Steps", body)
+        self.assertIn("## Codex Project", body)
+        self.assertIn("## Codex Project Path", body)
+        self.assertIn("## Related Local Workspaces", body)
+        self.assertIn("## Related GitHub Repositories", body)
+        self.assertIn("- Built MVP", body)
 
-class TestErrorHandling:
-    def test_404_exits(self):
-        with patch("github_client.requests.get", return_value=make_response({"message": "Not Found"}, 404)):
-            from github_client import get
-            with pytest.raises(SystemExit):
-                get("/repos/owner/bad-repo")
+    def test_parse_work_log_body_returns_resume_sections(self):
+        body = "\n".join([
+            WORK_LOG_MARKER,
+            "",
+            "## Work Completed",
+            "- Built MVP",
+            "",
+            "## Current State",
+            "- System stood up",
+            "",
+            "## Next Steps",
+            "- Review cleanup labels",
+            "",
+            "## Blockers / Open Questions",
+            "- Decide output stream",
+            "",
+            "## Codex Project",
+            "- SWT Personal Management",
+            "",
+            "## Codex Project Path",
+            "- /Users/scotttandy/Documents/Claude/Projects/SWT Personal Management",
+            "",
+            "## Related Local Workspaces",
+            "- /Users/scotttandy/Documents/Claude/Projects/SWT Personal Management",
+            "",
+            "## Related GitHub Repositories",
+            "- swtandy/personal-management",
+            "",
+            "## Useful Context",
+            "- Priority may be unavailable",
+        ])
 
-    def test_401_exits(self):
-        with patch("github_client.requests.get", return_value=make_response({"message": "Bad credentials"}, 401)):
-            from github_client import get
-            with pytest.raises(SystemExit):
-                get("/user")
+        parsed = parse_work_log_body(body)
 
-    def test_500_exits_after_retries(self):
-        # All attempts return 500 — should exit after exhausting retries
-        with patch("github_client.requests.get", return_value=make_response({}, 500)):
-            with patch("github_client.time.sleep"):
-                from github_client import get
-                with pytest.raises(SystemExit):
-                    get("/some/path")
+        self.assertEqual(parsed["work_completed"], ["Built MVP"])
+        self.assertEqual(parsed["current_state"], ["System stood up"])
+        self.assertEqual(parsed["next_steps"], ["Review cleanup labels"])
+        self.assertEqual(parsed["blockers_open_questions"], ["Decide output stream"])
+        self.assertEqual(parsed["codex_project"], ["SWT Personal Management"])
+        self.assertEqual(parsed["codex_project_path"], ["/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management"])
+        self.assertEqual(parsed["related_local_workspaces"], ["/Users/scotttandy/Documents/Claude/Projects/SWT Personal Management"])
+        self.assertEqual(parsed["related_github_repos"], ["swtandy/personal-management"])
+        self.assertEqual(parsed["useful_context"], ["Priority may be unavailable"])
 
-    def test_200_does_not_exit(self):
-        with patch("github_client.requests.get", return_value=make_response({"ok": True})):
-            from github_client import get
-            result = get("/some/path")
-        assert result == {"ok": True}
+    def test_get_work_logs_returns_parsed_logs_sorted_by_updated_time(self):
+        client = GitHubClient(token="test-token")
+        client.get_issue_comments = Mock(return_value=[
+            {
+                "body": "regular comment",
+                "updated_at": "2026-06-03T20:00:00Z",
+            },
+            {
+                "body": f"{WORK_LOG_MARKER}\n\n## Current State\n- Older",
+                "updated_at": "2026-06-03T21:00:00Z",
+            },
+            {
+                "body": f"{WORK_LOG_MARKER}\n\n## Current State\n- Newer",
+                "updated_at": "2026-06-03T22:30:57Z",
+            },
+        ])
 
+        logs = client.get_work_logs("swtandy/personal-management", 1)
 
-# ---------------------------------------------------------------------------
-# post / patch / delete
-# ---------------------------------------------------------------------------
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[-1]["updated_at"], "2026-06-03T22:30:57Z")
+        self.assertEqual(logs[-1]["parsed"]["current_state"], ["Newer"])
 
-class TestMutations:
-    def test_post_sends_json(self):
-        with patch("github_client.requests.post", return_value=make_response({"number": 1})) as mock_post:
-            from github_client import post
-            post("/repos/owner/repo/issues", {"title": "Test"})
-        _, kwargs = mock_post.call_args
-        assert kwargs["json"] == {"title": "Test"}
+    def test_build_field_map_collects_single_select_options(self):
+        project = {
+            "fields": {
+                "nodes": [
+                    {"id": "status-id", "name": "Status", "options": [{"name": "Backlog", "id": "opt-backlog"}]},
+                    None,
+                ]
+            }
+        }
 
-    def test_patch_sends_json(self):
-        with patch("github_client.requests.patch", return_value=make_response({"number": 1})) as mock_patch:
-            from github_client import patch as gh_patch
-            gh_patch("/repos/owner/repo/issues/1", {"state": "closed"})
-        _, kwargs = mock_patch.call_args
-        assert kwargs["json"] == {"state": "closed"}
+        self.assertEqual(build_field_map(project), {"Status": {"id": "status-id", "options": {"Backlog": "opt-backlog"}}})
 
-    def test_delete_with_empty_body(self):
-        empty_response = make_response(None, 204)
-        empty_response.content = b""
-        with patch("github_client.requests.delete", return_value=empty_response):
-            from github_client import delete
-            result = delete("/repos/owner/repo/issues/1/sub_issue", {"sub_issue_id": 999})
-        assert result == {}
+    def test_add_issue_to_project_returns_item_id(self):
+        client = GitHubClient(token="test-token")
+        client.graphql = Mock(return_value={"addProjectV2ItemById": {"item": {"id": "item-id"}}})
 
+        item_id = client.add_issue_to_project("project-id", "issue-node-id")
 
-# ---------------------------------------------------------------------------
-# Retry behaviour
-# ---------------------------------------------------------------------------
+        self.assertEqual(item_id, "item-id")
+        _, variables = client.graphql.call_args.args
+        self.assertEqual(variables, {"projectId": "project-id", "contentId": "issue-node-id"})
 
-class TestRetry:
-    def test_succeeds_after_one_transient_error(self):
-        responses = [make_response({}, 500), make_response({"ok": True})]
-        with patch("github_client.requests.get", side_effect=responses):
-            with patch("github_client.time.sleep"):
-                from github_client import get
-                result = get("/some/path")
-        assert result == {"ok": True}
+    def test_update_project_field_by_name_uses_option_id(self):
+        client = GitHubClient(token="test-token")
+        client.update_item_field_single_select = Mock()
+        project = {
+            "fields": {
+                "nodes": [
+                    {"id": "priority-id", "name": "Priority", "options": [{"name": "P2-High", "id": "p2-id"}]},
+                ]
+            }
+        }
 
-    def test_succeeds_after_two_transient_errors(self):
-        responses = [make_response({}, 503), make_response({}, 502), make_response({"ok": True})]
-        with patch("github_client.requests.get", side_effect=responses):
-            with patch("github_client.time.sleep"):
-                from github_client import get
-                result = get("/some/path")
-        assert result == {"ok": True}
+        client.update_project_field_by_name("project-id", "item-id", project, "Priority", "P2-High")
 
-    def test_retries_exactly_max_times_then_exits(self):
-        from github_client import MAX_RETRIES
-        # MAX_RETRIES+1 total attempts all fail
-        all_fail = [make_response({}, 500)] * (MAX_RETRIES + 1)
-        with patch("github_client.requests.get", side_effect=all_fail) as mock_get:
-            with patch("github_client.time.sleep"):
-                from github_client import get
-                with pytest.raises(SystemExit):
-                    get("/some/path")
-        assert mock_get.call_count == MAX_RETRIES + 1
+        client.update_item_field_single_select.assert_called_once_with("project-id", "item-id", "priority-id", "p2-id")
 
-    def test_does_not_retry_404(self):
-        with patch("github_client.requests.get", return_value=make_response({"message": "Not Found"}, 404)) as mock_get:
-            from github_client import get
-            with pytest.raises(SystemExit):
-                get("/bad/path")
-        assert mock_get.call_count == 1  # no retries
+    @patch("github_client.requests.post")
+    def test_create_issue_posts_to_repo_with_labels(self, mock_post):
+        response = Mock()
+        response.json.return_value = {"number": 7, "node_id": "issue-node-id"}
+        mock_post.return_value = response
+        client = GitHubClient(token="test-token")
+        client.ensure_label_exists = Mock()
 
-    def test_does_not_retry_403(self):
-        with patch("github_client.requests.get", return_value=make_response({"message": "Forbidden"}, 403)) as mock_get:
-            from github_client import get
-            with pytest.raises(SystemExit):
-                get("/bad/path")
-        assert mock_get.call_count == 1
+        issue = client.create_issue("owner/repo", "Title", body="Body", labels=["gtd:project"])
 
-    def test_retries_429(self):
-        responses = [make_response({}, 429), make_response({"ok": True})]
-        with patch("github_client.requests.get", side_effect=responses) as mock_get:
-            with patch("github_client.time.sleep"):
-                from github_client import get
-                result = get("/some/path")
-        assert mock_get.call_count == 2
-        assert result == {"ok": True}
+        self.assertEqual(issue["node_id"], "issue-node-id")
+        client.ensure_label_exists.assert_called_once_with("owner", "repo", "gtd:project")
+        mock_post.assert_called_once_with(
+            "https://api.github.com/repos/owner/repo/issues",
+            json={"title": "Title", "body": "Body", "labels": ["gtd:project"]},
+            headers=client.headers,
+        )
+        response.raise_for_status.assert_called_once()
 
-    def test_respects_retry_after_header_on_429(self):
-        r429 = make_response({}, 429)
-        r429.headers = {"Retry-After": "42"}
-        responses = [r429, make_response({"ok": True})]
-        with patch("github_client.requests.get", side_effect=responses):
-            with patch("github_client.time.sleep") as mock_sleep:
-                from github_client import get
-                get("/some/path")
-        mock_sleep.assert_called_once_with(42.0)
+    def test_set_issue_parent_by_number_removes_old_parent_then_adds_new_parent(self):
+        client = GitHubClient(token="test-token")
+        client.get_issue_node = Mock(side_effect=[
+            {"id": "child-id", "parent": {"id": "old-parent-id"}},
+            {"id": "new-parent-id"},
+        ])
+        client.remove_issue_parent = Mock()
+        client.set_issue_parent = Mock()
 
-    def test_exponential_backoff_increases(self):
-        from github_client import MAX_RETRIES
-        all_fail = [make_response({}, 500)] * (MAX_RETRIES + 1)
-        sleep_calls = []
-        with patch("github_client.requests.get", side_effect=all_fail):
-            with patch("github_client.random.uniform", return_value=0.0):
-                with patch("github_client.time.sleep", side_effect=lambda t: sleep_calls.append(t)):
-                    from github_client import get
-                    with pytest.raises(SystemExit):
-                        get("/some/path")
-        # With jitter=0, waits should be 1, 2, 4 (2^0, 2^1, 2^2)
-        assert sleep_calls == [1.0, 2.0, 4.0]
+        client.set_issue_parent_by_number("owner/repo", 2, "owner/repo", 1)
 
-    def test_retry_on_post(self):
-        responses = [make_response({}, 503), make_response({"number": 1})]
-        with patch("github_client.requests.post", side_effect=responses) as mock_post:
-            with patch("github_client.time.sleep"):
-                from github_client import post
-                result = post("/repos/owner/repo/issues", {"title": "T"})
-        assert mock_post.call_count == 2
-        assert result == {"number": 1}
-
-    def test_retry_on_patch(self):
-        responses = [make_response({}, 502), make_response({"number": 1, "state": "closed"})]
-        with patch("github_client.requests.patch", side_effect=responses) as mock_patch:
-            with patch("github_client.time.sleep"):
-                from github_client import patch as gh_patch
-                result = gh_patch("/repos/owner/repo/issues/1", {"state": "closed"})
-        assert mock_patch.call_count == 2
-
-    def test_get_all_retries_on_transient_error(self):
-        responses = [make_response({}, 500), make_response([{"id": 1}])]
-        with patch("github_client.requests.get", side_effect=responses) as mock_get:
-            with patch("github_client.time.sleep"):
-                from github_client import get_all
-                result = get_all("/some/path")
-        assert mock_get.call_count == 2
-        assert result == [{"id": 1}]
+        client.remove_issue_parent.assert_called_once_with("child-id", "old-parent-id")
+        client.set_issue_parent.assert_called_once_with("child-id", "new-parent-id")
 
 
-# ---------------------------------------------------------------------------
-# rate_limit_pause
-# ---------------------------------------------------------------------------
-
-class TestRateLimitPause:
-    def test_no_sleep_when_plenty_remaining(self):
-        rate_data = {"rate": {"remaining": 500, "reset": 9999999999}}
-        with patch("github_client.requests.get", return_value=make_response(rate_data)):
-            with patch("github_client.time.sleep") as mock_sleep:
-                from github_client import rate_limit_pause
-                rate_limit_pause(min_remaining=100)
-        mock_sleep.assert_not_called()
-
-    def test_sleeps_when_low(self):
-        import time as _time
-        rate_data = {"rate": {"remaining": 10, "reset": int(_time.time()) + 60}}
-        with patch("github_client.requests.get", return_value=make_response(rate_data)):
-            with patch("github_client.time.sleep") as mock_sleep:
-                from github_client import rate_limit_pause
-                rate_limit_pause(min_remaining=100)
-        mock_sleep.assert_called_once()
-        sleep_duration = mock_sleep.call_args[0][0]
-        assert sleep_duration > 0
+if __name__ == "__main__":
+    unittest.main()
