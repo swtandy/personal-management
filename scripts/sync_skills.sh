@@ -9,27 +9,20 @@ if [[ "$python_bin" != /* ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Codex CLI skills  →  ~/.codex/skills/
+# Codex app skills  →  .agents/skills/ (read from repo — no sync needed)
 # ---------------------------------------------------------------------------
-codex_home="${CODEX_HOME:-$HOME/.codex}"
-codex_skills_dir="$codex_home/skills"
-mkdir -p "$codex_skills_dir"
-
+# The Codex app reads skills directly from .agents/skills/ in the repo.
+# No copy to ~/.codex/skills/ is required. Validate the files exist.
 for skill in gtd_mgmt gtd_workflow; do
-    source_dir="$repo_root/.codex/skills/$skill"
-    target_dir="$codex_skills_dir/$skill"
-
-    if [[ ! -d "$source_dir" ]]; then
-        echo "Missing Codex skill: $source_dir" >&2
-        exit 1
+    skill_file="$repo_root/.agents/skills/$skill/SKILL.md"
+    if [[ ! -f "$skill_file" ]]; then
+        echo "WARNING: Missing Codex app skill: $skill_file" >&2
+        echo "  Skills will not appear in the Codex app until this file exists." >&2
+    else
+        echo "Codex app skill present: .agents/skills/$skill/SKILL.md"
     fi
-
-    mkdir -p "$target_dir"
-    cp -R "$source_dir/." "$target_dir/"
-    echo "Synced Codex skill: $skill -> $target_dir"
 done
-
-echo "Restart Codex or start a new thread to pick up Codex skill changes."
+echo "Restart Codex to pick up skill changes (no sync needed — reads from repo)."
 echo ""
 
 # ---------------------------------------------------------------------------

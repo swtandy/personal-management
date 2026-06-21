@@ -124,16 +124,22 @@ one when applying this to a new project.
           SKILL.md            ← skill text for Cowork plugin
         gtd-workflow/
           SKILL.md
+  .agents/
+    skills/
+      gtd_mgmt/
+        SKILL.md              ← Codex app skill (read directly from repo — no sync)
+        agents/
+          openai.yaml         ← UI metadata + MCP dependency declaration
+      gtd_workflow/
+        SKILL.md
+        agents/
+          openai.yaml
   .claude/
     commands/
       gtd-mgmt.md             ← source for Claude Code CLI skill
       gtd-workflow.md
   .codex/
-    skills/
-      gtd_mgmt/
-        SKILL.md              ← source for Codex CLI skill
-      gtd_workflow/
-        SKILL.md
+    config.toml               ← Codex MCP server registration (synced to ~/.codex/config.toml)
   agents/
     gtd_mgmt_mcp_server.py    ← the MCP server entry point
   scripts/
@@ -170,12 +176,12 @@ one when applying this to a new project.
 |---|---|---|
 | `.claude/commands/gtd-mgmt.md` | `~/.claude/skills/gtd-mgmt/SKILL.md` | Claude Code CLI |
 | `.claude/commands/gtd-workflow.md` | `~/.claude/skills/gtd-workflow/SKILL.md` | Claude Code CLI |
-| `.codex/skills/gtd_mgmt/` | `~/.codex/skills/gtd_mgmt/` | Codex CLI |
-| `.codex/skills/gtd_workflow/` | `~/.codex/skills/gtd_workflow/` | Codex CLI |
+| `.agents/skills/gtd_mgmt/` | (read from repo — no sync needed) | Codex app |
+| `.agents/skills/gtd_workflow/` | (read from repo — no sync needed) | Codex app |
 | `plugins/gtd/` | `~/.claude/plugins/cache/personal-management/gtd/<version>/` | Cowork CLI cache (intermediate) |
 | `plugins/gtd/skills/` + `plugins/gtd/.claude-plugin/` | `~/Library/Application Support/Claude/local-agent-mode-sessions/.../rpm/plugin_<id>/` | Cowork runtime (what Cowork actually reads) |
 | MCP server path | `~/.claude.json` | Claude Code MCP |
-| MCP server path | `~/.codex/config.toml` | Codex MCP |
+| `.codex/config.toml` (in repo, MCP block) | `~/.codex/config.toml` | Codex MCP |
 | MCP server path | `~/Library/Application Support/Claude/claude_desktop_config.json` | Cowork MCP |
 
 The Cowork runtime rpm path contains opaque UUIDs and changes on reinstall.
@@ -238,11 +244,15 @@ The rpm directory is created by Cowork on first launch. Step 7 completes it.
 
 ## What the Sync Script Does (Step by Step)
 
-For **Claude Code CLI** and **Codex CLI**:
+For **Claude Code CLI**:
 - Copies `.claude/commands/*.md` to `~/.claude/skills/<name>/SKILL.md`
-- Copies `.codex/skills/` to `~/.codex/skills/`
 - Writes MCP server entry into `~/.claude.json` (project-scoped)
+
+For **Codex app**:
+- Validates `.agents/skills/*/SKILL.md` exist (no copy needed — Codex reads from the repo)
 - Writes MCP server entry into `~/.codex/config.toml`
+
+For **Cowork** (desktop app):
 - Writes MCP server entry into `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 For **Cowork**:
@@ -335,6 +345,19 @@ cat "$HOME/Library/Application Support/Claude/claude_desktop_config.json" | \
 Remove any entry whose `args` path no longer exists.
 
 ### 7. First Cowork install requires two sync passes
+
+### 8. Codex app skills live in `.agents/skills/`, not `.codex/skills/`
+
+The Codex app scans `.agents/skills/` from the repo directory at runtime.
+Files in `.codex/skills/` are silently ignored — no error, no warning, skills
+just don't appear. Each skill needs a `SKILL.md` with `name` and `description`
+frontmatter, and optionally `agents/openai.yaml` for UI metadata and MCP
+dependency declarations. The `openai.yaml` must use the nested `interface:`
+format — flat keys at the root level are not read.
+
+**Codex app skills do not need syncing.** The sync script only validates they
+exist and writes the MCP entry to `~/.codex/config.toml`. Do not add a copy
+step for `.agents/skills/` — it would be both wrong and unnecessary.
 
 The rpm plugin runtime directory does not exist until Cowork has launched with
 the plugin installed. The sync script will report "rpm directory not found" on
