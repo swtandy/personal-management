@@ -16,6 +16,7 @@ from agents.project_gui import (
     _item_phase,
     _item_when,
     _list_param,
+    _repo_matches,
     _root_title_for,
     _sort_key,
     _try_set_issue_parent,
@@ -812,6 +813,69 @@ class GroupByAreaBucketTests(unittest.TestCase):
         ]
         self.assertEqual(len(eng_bucket), 2)
         self.assertEqual(len(ops_bucket), 2)
+
+
+class RepoMatchesTests(unittest.TestCase):
+    def test_empty_query_matches_anything(self):
+        self.assertTrue(_repo_matches("swtandy/personal-management", ""))
+
+    def test_full_form_matches_exact(self):
+        self.assertTrue(_repo_matches("swtandy/personal-management", "swtandy/personal-management"))
+
+    def test_short_name_matches_full_owner_repo(self):
+        # Cowork fix: querying by "personal-management" should find "swtandy/personal-management"
+        self.assertTrue(_repo_matches("swtandy/personal-management", "personal-management"))
+
+    def test_short_name_does_not_match_different_repo(self):
+        self.assertFalse(_repo_matches("swtandy/other-repo", "personal-management"))
+
+    def test_different_repo_names_do_not_match(self):
+        self.assertFalse(_repo_matches("swtandy/repo-a", "repo-b"))
+
+    def test_no_owner_item_matched_by_short_name(self):
+        self.assertTrue(_repo_matches("repo", "repo"))
+
+
+class GroupByWhenEmptyStateTests(unittest.TestCase):
+    """Regression: 'Group by When' appeared empty when no issues had when: labels.
+
+    The fix was to default group_by to 'Area', which shows all issues regardless
+    of when: label presence. These tests document both the broken behaviour (When
+    mode is empty without labels) and the correct behaviour (Area mode is not).
+    """
+
+    def _items_without_when_labels(self):
+        root = _item(1, "[Scott T] Home And Property")
+        child = _item(2, "Fix deck", parent=(1, "[Scott T] Home And Property"), parent_repo="owner/repo")
+        task = _item(3, "Buy lumber", parent=(2, "Fix deck"), parent_repo="owner/repo")
+        return [root, child, task]
+
+    def test_when_group_renders_nothing_when_no_items_have_when_labels(self):
+        """The bug: all 69 issues appeared missing because none were triaged with when: labels."""
+        index, children = build_issue_tree(self._items_without_when_labels())
+        gui = _make_gui(index, children, when_filters=[], group_by="When")
+        tree = _attach_fake_tree(gui)
+
+        gui._populate_tree_by_when()
+
+        # Only the "No items match" message row is inserted — no issue rows
+        rendered = [node["text"] for node in tree.nodes.values()]
+        self.assertNotIn("#1  [Scott T] Home And Property", rendered)
+        self.assertNotIn("#2  Fix deck", rendered)
+        self.assertIn("No items match the current filters.", rendered[0])
+
+    def test_area_group_shows_all_items_without_when_labels(self):
+        """The fix: Area grouping displays issues regardless of when: label."""
+        index, children = build_issue_tree(self._items_without_when_labels())
+        gui = _make_gui(index, children, when_filters=[], group_by="Area")
+        tree = _attach_fake_tree(gui)
+
+        gui._populate_tree_by_area()
+
+        rendered = {node["text"] for node in tree.nodes.values()}
+        self.assertIn("#1  [Scott T] Home And Property", rendered)
+        self.assertIn("#2  Fix deck", rendered)
+        self.assertIn("#3  Buy lumber", rendered)
 
 
 if __name__ == "__main__":

@@ -270,7 +270,7 @@ class ProjectIssueGui(ctk.CTk):
         self._search_var = ctk.StringVar(value="")
         self._when_filter_vars: dict[str, ctk.BooleanVar] = {
             "when:today":        ctk.BooleanVar(value=False),
-            "when:this-week":    ctk.BooleanVar(value=True),
+            "when:this-week":    ctk.BooleanVar(value=False),
             "when:this-month":   ctk.BooleanVar(value=False),
             "when:this-quarter": ctk.BooleanVar(value=False),
         }
@@ -280,7 +280,7 @@ class ProjectIssueGui(ctk.CTk):
             "inbox":   ctk.BooleanVar(value=False),
         }
         self._area_var = ctk.StringVar(value="All")
-        self._group_by_var = ctk.StringVar(value="When")
+        self._group_by_var = ctk.StringVar(value="Area")
 
         self._build_ui()
         self._apply_tree_style()
@@ -1233,7 +1233,7 @@ class ProjectIssueGui(ctk.CTk):
         repo = str(data.get("repo", "") or "").strip()
         matches = [
             item for item in self._items
-            if int(item.get("number") or 0) == issue_number and (not repo or item.get("repo") == repo)
+            if int(item.get("number") or 0) == issue_number and _repo_matches(str(item.get("repo") or ""), repo)
         ]
         if not matches:
             raise ValueError(f"issue #{issue_number} not found in loaded project")
@@ -1246,7 +1246,7 @@ class ProjectIssueGui(ctk.CTk):
         return [
             self._issue_summary(item)
             for item in self._items
-            if int(item.get("number") or 0) == number and (not repo or item.get("repo") == repo)
+            if int(item.get("number") or 0) == number and _repo_matches(str(item.get("repo") or ""), repo)
         ]
 
     def _issue_summary(self, item: dict[str, Any], *, include_body: bool = False) -> dict[str, Any]:
@@ -1286,6 +1286,14 @@ class ProjectIssueGui(ctk.CTk):
 
 def _short_repo(repo: str) -> str:
     return repo.split("/", 1)[1] if "/" in repo else repo
+
+
+def _repo_matches(item_repo: str, query_repo: str) -> bool:
+    """Return True if query_repo matches item_repo, accepting either the full
+    'owner/repo' form or just the 'repo' name."""
+    if not query_repo:
+        return True
+    return item_repo == query_repo or _short_repo(item_repo) == _short_repo(query_repo)
 
 
 def build_project_context(
