@@ -1,0 +1,10 @@
+interface:
+  display_name: "GTD Workflow"
+  short_description: "Run GTD planning, review, cross-project resume handoffs, next-action, and responsibility-domain workflows for Scott's personal life management."
+  default_prompt: "Use gtd_workflow to clarify my current work, map it to the right responsibility domain, create resume handoffs when needed, and identify the next action."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gtd_mgmt"
+      description: "GTD Management MCP server — required for GitHub Project reads and writes"

@@ -1,0 +1,10 @@
+interface:
+  display_name: "GTD Management"
+  short_description: "Resume exact GitHub issues, create handoff workdowns, organize GTD Project work, and record structured work logs through local MCP tools."
+  default_prompt: "Use gtd_mgmt to resume from owner/repo#123, create a target-project handoff file, organize issues, apply labels and Project fields, manage hierarchy, and record work logs."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gtd_mgmt"
+      description: "GTD Management MCP server — provides GitHub Project issue management tools"

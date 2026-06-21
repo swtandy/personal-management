@@ -89,12 +89,12 @@ The GUI (`project_gui.py`) acts as a local data cache for the MCP server. It lau
 
 ## Skills
 
-Two skills — each exists for Claude Code and Codex CLI:
+Two skills — each exists for Claude Code and the Codex app:
 
-| Skill | Claude Code | Codex |
+| Skill | Claude Code | Codex app |
 |---|---|---|
-| **gtd-mgmt** | `.claude/commands/gtd-mgmt.md` | `.codex/skills/gtd_mgmt/SKILL.md` |
-| **gtd-workflow** | `.claude/commands/gtd-workflow.md` | `.codex/skills/gtd_workflow/SKILL.md` |
+| **gtd-mgmt** | `.claude/commands/gtd-mgmt.md` | `.agents/skills/gtd_mgmt/SKILL.md` |
+| **gtd-workflow** | `.claude/commands/gtd-workflow.md` | `.agents/skills/gtd_workflow/SKILL.md` |
 
 Deploy skills to both runtimes:
 ```bash
