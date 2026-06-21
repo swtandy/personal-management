@@ -217,4 +217,68 @@ fi
 echo "Restart the Claude desktop app to pick up MCP config changes."
 echo ""
 
+# ---------------------------------------------------------------------------
+# Cowork plugin  →  claude plugin marketplace add swtandy/personal-management
+# ---------------------------------------------------------------------------
+claude_bin=""
+if command -v claude &>/dev/null; then
+    claude_bin="claude"
+else
+    _app_cli=$(ls "$HOME/Library/Application Support/Claude/claude-code"/*/claude.app/Contents/MacOS/claude 2>/dev/null | sort -V | tail -1)
+    [[ -x "$_app_cli" ]] && claude_bin="$_app_cli"
+fi
+
+if [[ -n "$claude_bin" ]]; then
+    # Ensure the marketplace is registered
+    "$claude_bin" plugin marketplace add swtandy/personal-management 2>/dev/null || true
+    # Pull the marketplace clone so the CLI sees the latest plugin version
+    marketplace_clone="$HOME/.claude/plugins/marketplaces/personal-management"
+    if [[ -d "$marketplace_clone/.git" ]]; then
+        git -C "$marketplace_clone" pull --ff-only --quiet 2>/dev/null || true
+    fi
+    # Install if not present, update if already installed
+    if "$claude_bin" plugin list 2>/dev/null | grep -q "gtd@personal-management"; then
+        if "$claude_bin" plugin update gtd@personal-management 2>/dev/null; then
+            echo "Updated Cowork plugin: gtd@personal-management (CLI cache)"
+        else
+            echo "Cowork plugin gtd@personal-management is already up to date (CLI cache)."
+        fi
+    else
+        if "$claude_bin" plugin install gtd@personal-management 2>/dev/null; then
+            echo "Installed Cowork plugin: gtd@personal-management (CLI cache)"
+        else
+            echo "Note: 'claude plugin install gtd@personal-management' failed."
+            echo "Try manually: \"$claude_bin\" plugin install gtd@personal-management"
+        fi
+    fi
+else
+    echo "Note: 'claude' not found — skipping Cowork plugin sync."
+    echo "First-time install: claude plugin install gtd@personal-management"
+fi
+
+# ---------------------------------------------------------------------------
+# Cowork runtime plugin cache  →  local-agent-mode-sessions/.../rpm/
+# ---------------------------------------------------------------------------
+# Cowork loads skills from its own rpm directory, separate from the CLI cache.
+# Find the gtd plugin rpm dir dynamically by locating whichever rpm plugin dir
+# contains skills/gtd-workflow.
+cowork_rpm_gtd=$(find "$HOME/Library/Application Support/Claude/local-agent-mode-sessions" \
+    -type d -name "gtd-workflow" 2>/dev/null \
+    | grep "/rpm/" \
+    | sed 's|/skills/gtd-workflow||' \
+    | head -1)
+
+if [[ -n "$cowork_rpm_gtd" ]]; then
+    cp -r "$repo_root/plugins/gtd/skills/." "$cowork_rpm_gtd/skills/"
+    cp -r "$repo_root/plugins/gtd/.claude-plugin/." "$cowork_rpm_gtd/.claude-plugin/"
+    echo "Synced Cowork runtime cache: $cowork_rpm_gtd/"
+else
+    echo "Note: Cowork rpm gtd plugin directory not found — runtime cache not updated."
+    echo "This is expected on first install. After running this script:"
+    echo "  1. Launch Cowork and let it fully load (creates the rpm directory)."
+    echo "  2. Re-run this script to sync the runtime cache."
+fi
+echo "Restart Cowork to pick up skill changes."
+echo ""
+
 echo "Sync complete."
