@@ -5,9 +5,9 @@ Cowork plugin actually reach every client.
 
 ---
 
-## CRITICAL: Three Things That Will Waste Your Day If You Forget Them
+## CRITICAL: Four Things That Will Waste Your Day If You Forget Them
 
-These have each caused repeated debugging sessions. Read before touching anything.
+These have each caused real debugging sessions. Read before touching anything.
 
 ---
 
@@ -18,7 +18,7 @@ and do **not share a plugin directory**. Updating one does not update the other.
 
 | What | Where it stores plugins | Who reads it |
 |---|---|---|
-| `claude plugin` CLI | `~/.claude/plugins/cache/gtd-agents/gtd/<version>/` | Claude Code CLI only |
+| `claude plugin` CLI | `~/.claude/plugins/cache/personal-management/gtd/<version>/` | Claude Code CLI only |
 | Cowork desktop app | `~/Library/Application Support/Claude/local-agent-mode-sessions/.../rpm/plugin_<id>/` | Cowork only |
 
 **Both must be updated.** The sync script handles both automatically. Running
@@ -57,19 +57,35 @@ script will not fix this for you.
 
 ---
 
+### 4. The repo root needs marketplace.json before the marketplace can be registered
+
+`claude plugin marketplace add swtandy/personal-management` requires a file at
+`.claude-plugin/marketplace.json` in the repo root (not inside `plugins/gtd/`).
+Without it the command fails with:
+
+```
+Marketplace file not found at ~/.claude/plugins/marketplaces/swtandy-personal-management/.claude-plugin/marketplace.json
+```
+
+This file already exists in the repo (`/.claude-plugin/marketplace.json`). If
+you ever see that error it means the file was deleted or the wrong repo URL was
+used.
+
+---
+
 ## What Gets Synced Where
 
 | Source (this repo) | Destination | Client |
 |---|---|---|
 | `.codex/skills/gtd_mgmt/` | `~/.codex/skills/gtd_mgmt/` | Codex CLI |
 | `.codex/skills/gtd_workflow/` | `~/.codex/skills/gtd_workflow/` | Codex CLI |
-| `.claude/commands/gtd-mgmt.md` | `~/.claude/skills/gtd-mgmt/SKILL.md` | Claude Code / Cowork (skills dir) |
-| `.claude/commands/gtd-workflow.md` | `~/.claude/skills/gtd-workflow/SKILL.md` | Claude Code / Cowork (skills dir) |
-| `plugins/gtd/` | `~/.claude/plugins/cache/gtd-agents/gtd/<version>/` | CLI cache (not what Cowork loads) |
+| `.claude/commands/gtd-mgmt.md` | `~/.claude/skills/gtd-mgmt/SKILL.md` | Claude Code CLI |
+| `.claude/commands/gtd-workflow.md` | `~/.claude/skills/gtd-workflow/SKILL.md` | Claude Code CLI |
+| `plugins/gtd/` | `~/.claude/plugins/cache/personal-management/gtd/<version>/` | CLI cache (not what Cowork loads) |
 | `plugins/gtd/` | `~/Library/Application Support/Claude/local-agent-mode-sessions/.../rpm/plugin_<id>/` | Cowork runtime (what Cowork actually loads) |
 | MCP server path | `~/.claude.json` | Claude Code MCP |
 | MCP server path | `~/.codex/config.toml` | Codex MCP |
-| MCP server path | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude desktop app MCP |
+| MCP server path | `~/Library/Application Support/Claude/claude_desktop_config.json` | Claude desktop app / Cowork MCP |
 
 ---
 
@@ -93,23 +109,23 @@ the client.
 The script (`scripts/sync_skills.sh`) does the following for Cowork:
 
 1. Registers the marketplace if not already present:
-   `claude plugin marketplace add swtoxmiq/gtd-agents`
+   `claude plugin marketplace add swtandy/personal-management`
    The marketplace is stored as a git clone at
-   `~/.claude/plugins/marketplaces/gtd-agents/`.
+   `~/.claude/plugins/marketplaces/swtandy-personal-management/`.
 
 2. **Pulls the marketplace clone** (`git pull`) so the CLI can see the version
    declared in the just-pushed commit. Without this pull, `claude plugin update`
    compares against a stale local copy and reports "already at latest" even
    after a version bump.
 
-3. Runs `claude plugin update gtd@gtd-agents` (or `install` on first run) to
-   update the CLI cache at `~/.claude/plugins/cache/`. This does **not** update
-   the Cowork runtime.
+3. Runs `claude plugin update gtd@personal-management` (or `install` on first
+   run) to update the CLI cache at `~/.claude/plugins/cache/`. This does **not**
+   update the Cowork runtime.
 
 4. **Finds the Cowork rpm directory dynamically** and copies both `skills/` and
-   `.claude-plugin/` into it. Both subdirectories must be copied — `skills/`
-   alone leaves the old version number in `plugin.json` and Cowork considers
-   the plugin unchanged.
+   `.claude-plugin/` from `plugins/gtd/` into it. Both subdirectories must be
+   copied — `skills/` alone leaves the old version number in `plugin.json` and
+   Cowork considers the plugin unchanged.
 
 Use semver for version bumps. Content-only changes (skill text): bump patch.
 New skills or tools: bump minor. Breaking changes: bump major.
@@ -138,28 +154,27 @@ alias claude="$HOME/Library/Application Support/Claude/claude-code/$(ls "$HOME/L
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/swtoxmiq/gtd-agents.git
-cd gtd-agents
+git clone https://github.com/swtandy/personal-management.git
+cd personal-management
 
-# 2. Create the venv and install dependencies (see README)
-python3 -m venv .venv
+# 2. Create the venv and install dependencies
+python3.13 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# 3. Run the sync — installs everything including the Cowork plugin
+# 3. Run the sync — installs Codex/Claude Code skills, MCP configs, and the Cowork plugin
 bash scripts/sync_skills.sh
 
-# 4. Restart Codex, Claude Code, and Cowork
+# 4. Launch Cowork (first launch creates the rpm plugin directory)
+
+# 5. Re-run the sync — now it can find the rpm directory and sync the runtime cache
+bash scripts/sync_skills.sh
+
+# 6. Restart Codex and Claude Code to pick up skills and MCP config
 ```
 
-Note: on first run the Cowork runtime sync step will report "not found" because
-Cowork hasn't launched yet and the rpm directory doesn't exist. Launch Cowork
-once, then re-run `bash scripts/sync_skills.sh`.
-
-**If the marketplace sync fails** ("Marketplace sync failed. Check the repository URL
-and try again."): this is usually a GitHub App access problem — see the
-troubleshooting section below. As a bypass, use the `create-cowork-plugin` skill
-in Cowork to install the plugin directly without the marketplace, then re-run
-`sync_skills.sh` so the script finds the rpm directory and handles future updates.
+Note: step 3 will report "Cowork rpm gtd plugin directory not found" on first
+run — that is expected. The rpm directory is created when Cowork first loads the
+plugin after step 4. Re-running in step 5 completes the runtime sync.
 
 ---
 
@@ -209,16 +224,11 @@ the latest version directory — if it still fails, find the binary manually:
 find "$HOME/Library/Application Support/Claude/claude-code" -name claude -type f
 ```
 
-### Cowork shows "Marketplace sync failed. Check the repository URL and try again."
+### `claude plugin marketplace add` fails with "Marketplace file not found"
 
-This is a GitHub App access problem, not a URL problem. Cowork uses a GitHub App
-(not OAuth) to clone repos. For org repos the App must be explicitly installed on
-the org — being in the org's Authorized Apps list is not the same thing.
-
-For personal repos (`swtoxmiq/gtd-agents`) this is uncommon but can appear after
-a Cowork reinstall or token expiry. Try re-authorizing the Cowork GitHub App in
-your GitHub account settings. If the problem persists, use the `create-cowork-plugin`
-skill in Cowork to install the plugin directly, then re-run `sync_skills.sh`.
+The repo root is missing `.claude-plugin/marketplace.json`. This file must exist
+at the repo root (not inside `plugins/gtd/`) for the marketplace to register.
+Check it exists, commit, push, then re-run the sync.
 
 ### Skills changed but Codex/Claude Code still uses old text
 
