@@ -1,0 +1,13 @@
+{
+  "name": "personal-management",
+  "owner": {
+    "name": "swtandy"
+  },
+  "plugins": [
+    {
+      "name": "gtd",
+      "source": "./plugins/gtd",
+      "description": "GTD project and workflow management for Scott T's personal management."
+    }
+  ]
+}
