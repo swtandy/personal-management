@@ -23,6 +23,7 @@ from tkinter import ttk
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
+import attachments
 from config import GITHUB_PROJECT_NUMBER, GITHUB_USER
 from github_client import GitHubClient
 
@@ -222,6 +223,12 @@ class CommandHandler(http.server.BaseHTTPRequestHandler):
         if path == "/latest-work-log":
             self._send_json(self._dispatch({
                 "cmd": "latest-work-log",
+                "data": {"issue_number": query.get("n", [None])[0], "repo": query.get("repo", [""])[0]},
+            }))
+            return
+        if path == "/list-files":
+            self._send_json(self._dispatch({
+                "cmd": "list-files",
                 "data": {"issue_number": query.get("n", [None])[0], "repo": query.get("repo", [""])[0]},
             }))
             return
@@ -530,6 +537,8 @@ class ProjectIssueGui(ctk.CTk):
                 return self._command_comments(data)
             if name == "latest-work-log":
                 return self._command_latest_work_log(data)
+            if name == "list-files":
+                return self._command_list_files(data)
             if name == "apply-change":
                 return self._command_apply_change(data)
             return {"ok": False, "error": f"unknown command: {name}"}
@@ -666,6 +675,10 @@ class ProjectIssueGui(ctk.CTk):
         comment = GitHubClient().get_latest_work_log(item["repo"], int(item["number"]))
         return {"ok": True, "issue": self._issue_summary(item), "latest_work_log": comment}
 
+    def _command_list_files(self, data: dict[str, Any]) -> dict[str, Any]:
+        item = self._resolve_issue(data)
+        return attachments.list_files(GitHubClient(), item["repo"], int(item["number"]))
+
     def _command_apply_change(self, data: dict[str, Any]) -> dict[str, Any]:
         op = str(data.get("op") or "").strip()
         params = data.get("params") or {}
@@ -691,6 +704,9 @@ class ProjectIssueGui(ctk.CTk):
         issue_number = int(item["number"])
 
         if op == "append_work_log":
+            attachment_section = attachments.attach_many_and_build_section(
+                client, repo, issue_number, params.get("attachments"),
+            )
             comment = client.append_work_log(
                 repo,
                 issue_number,
@@ -703,12 +719,56 @@ class ProjectIssueGui(ctk.CTk):
                 related_local_workspaces=str(params.get("related_local_workspaces") or ""),
                 related_github_repos=str(params.get("related_github_repos") or ""),
                 useful_context=str(params.get("useful_context") or ""),
+                attachments_markdown=attachment_section["markdown"],
             )
         elif op == "add_comment":
             body = str(params.get("body") or "").strip()
             if not body:
                 return {"ok": False, "error": "params.body is required"}
+            attachment_section = attachments.attach_many_and_build_section(
+                client, repo, issue_number, params.get("attachments"),
+            )
+            if attachment_section["markdown"]:
+                body = body + "\n\n## Attachments\n\n" + attachment_section["markdown"]
             comment = client.add_issue_comment(repo, issue_number, body)
+        elif op == "attach_file_to_issue":
+            path = str(params.get("file_path") or "").strip()
+            if not path:
+                return {"ok": False, "error": "params.file_path is required"}
+            return {
+                "ok": True, "op": op,
+                **attachments.attach_file(
+                    client, repo, issue_number, path,
+                    caption=str(params.get("caption") or ""),
+                    name=str(params.get("name") or ""),
+                    mode=str(params.get("mode") or "comment"),
+                    comment_text=str(params.get("comment_text") or ""),
+                ),
+            }
+        elif op == "update_issue_file":
+            manifest_path = str(params.get("path") or "").strip()
+            new_path = str(params.get("file_path") or "").strip()
+            if not manifest_path or not new_path:
+                return {"ok": False, "error": "params.path and params.file_path are required"}
+            return {
+                "ok": True, "op": op,
+                **attachments.update_file(
+                    client, repo, issue_number, manifest_path, new_path,
+                    caption=str(params.get("caption") or ""),
+                    mode=str(params.get("mode") or "comment"),
+                ),
+            }
+        elif op == "delete_issue_file":
+            manifest_path = str(params.get("path") or "").strip()
+            if not manifest_path:
+                return {"ok": False, "error": "params.path is required"}
+            return {
+                "ok": True, "op": op,
+                **attachments.delete_file(
+                    client, repo, issue_number, manifest_path,
+                    handle_references=str(params.get("handle_references") or "warn"),
+                ),
+            }
         elif op == "add_labels":
             labels = _list_param(params.get("labels"))
             if not labels:
@@ -762,6 +822,10 @@ class ProjectIssueGui(ctk.CTk):
         item_id = client.add_issue_to_project(project["id"], issue["node_id"])
         status_result = _try_update_project_field(client, project["id"], item_id, project, "Status", status, warnings)
         priority_result = _try_update_project_field(client, project["id"], item_id, project, "Priority", priority, warnings)
+        attachment_results = _apply_attachments_to_new_issue(
+            client, repo, int(issue["number"]), body,
+            data.get("attachments") if "attachments" in data else params.get("attachments"),
+        )
         result = {
             "issue": {
                 "repo": repo,
@@ -775,6 +839,8 @@ class ProjectIssueGui(ctk.CTk):
                 "priority": priority_result,
             }
         }
+        if attachment_results:
+            result["issue"]["attachments"] = attachment_results
         if warnings:
             result["warnings"] = warnings
         return result
@@ -806,6 +872,10 @@ class ProjectIssueGui(ctk.CTk):
         status_result = _try_update_project_field(client, project["id"], item_id, project, "Status", status, warnings)
         priority_result = _try_update_project_field(client, project["id"], item_id, project, "Priority", priority, warnings)
         parent = _try_set_issue_parent(client, repo, int(issue["number"]), parent_repo, parent_number, warnings)
+        attachment_results = _apply_attachments_to_new_issue(
+            client, repo, int(issue["number"]), body,
+            data.get("attachments") if "attachments" in data else params.get("attachments"),
+        )
 
         result = {
             "issue": {
@@ -821,6 +891,8 @@ class ProjectIssueGui(ctk.CTk):
                 "parent": parent,
             }
         }
+        if attachment_results:
+            result["issue"]["attachments"] = attachment_results
         if warnings:
             result["warnings"] = warnings
         return result
@@ -1474,6 +1546,23 @@ def _try_set_issue_parent(
         except Exception:
             result["issue_number"] = parent_issue_number
         return result
+
+
+def _apply_attachments_to_new_issue(
+    client: GitHubClient,
+    repo: str,
+    issue_number: int,
+    body: str,
+    attachment_items: Any,
+) -> list[dict[str, Any]] | None:
+    """Upload attachments to a just-created issue and append an Attachments section to its body."""
+    if not attachment_items:
+        return None
+    section = attachments.attach_many_and_build_section(client, repo, issue_number, attachment_items)
+    if section["markdown"]:
+        new_body = (body or "") + "\n\n## Attachments\n\n" + section["markdown"]
+        client.update_issue_body(repo, issue_number, new_body)
+    return section["results"]
 
 
 def normalize_issue_ref(value: dict[str, Any]) -> tuple[str, int]:

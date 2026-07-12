@@ -48,6 +48,18 @@ For bulk changes, use `dry_run=True` first unless the user explicitly asks to ap
 
 Use `capture_issue` for new actionable source material. It defaults the parent to `[Scott T] Inbox` (#70) — triage later by re-parenting to the correct Area root.
 
+## Attachments
+
+Real files (screenshots, floor plans, PDFs, spreadsheets) can be landed directly on an issue instead of just describing them:
+
+- `attach_file_to_issue(issue_number, file_path, repo, caption, mode)` uploads a local file to the issue's `gtd-assets` manifest and embeds/links it (`mode="comment"` posts a comment, `"body_append"` appends to the issue body, `"none"` uploads only and returns the URL).
+- `list_issue_files(issue_number, repo)` lists everything attached to an issue, including superseded/deleted entries.
+- `update_issue_file(issue_number, path, file_path, repo, caption, mode)` replaces an attachment while preserving history.
+- `delete_issue_file(issue_number, path, repo, handle_references)` removes an attachment; `handle_references="annotate"` also flags comments that referenced it.
+- `add_comment`, `append_work_log`, `create_issue`, and `capture_issue` all accept an optional `attachments` list of `{"file_path": "...", "caption": "..."}` to upload and embed inline in the same call, instead of attaching separately.
+
+Images render inline; other file types are linked. Private repos always render as links (GitHub's image proxy can't fetch private raw content).
+
 For issue creation/capture, required setup failures should stop the operation, but optional organization failures such as invalid Status, invalid Priority, or parent assignment failure may return `warnings`. Report warnings to the user and continue from the created issue instead of retrying blindly. If Priority is unavailable, leave Priority blank and preserve the requested value in the warning.
 
 ## Resume Context

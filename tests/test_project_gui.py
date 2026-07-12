@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 pytest.importorskip("tkinter", reason="tkinter/_tkinter not available in this Python install — skipping GUI tests")
@@ -876,6 +876,106 @@ class GroupByWhenEmptyStateTests(unittest.TestCase):
         self.assertIn("#1  [Scott T] Home And Property", rendered)
         self.assertIn("#2  Fix deck", rendered)
         self.assertIn("#3  Buy lumber", rendered)
+
+
+class ApplyChangeAttachmentOpsTests(unittest.TestCase):
+    """Wiring tests: _command_apply_change routes attachment ops to attachments.py correctly."""
+
+    def _gui_with_issue(self, fake_client):
+        gui = ProjectIssueGui.__new__(ProjectIssueGui)
+        gui._items = [{
+            "repo": "owner/repo", "number": 9, "title": "Deck layout", "url": "https://github.com/owner/repo/issues/9",
+            "state": "OPEN", "status": "Backlog", "priority": "", "labels": [], "assignees": [],
+            "parent": None, "parent_repo": "", "fields": {}, "item_id": "item-id",
+        }]
+        return gui
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_attach_file_to_issue_op_uploads_and_returns_result(self, mock_client_cls):
+        from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+        path = _write_temp_file(".png", PNG_HEADER + b"0" * 32)
+        try:
+            result = gui._command_apply_change({
+                "op": "attach_file_to_issue",
+                "issue_number": 9,
+                "repo": "owner/repo",
+                "params": {"file_path": path, "caption": "Deck plan"},
+            })
+        finally:
+            import os
+            os.unlink(path)
+
+        self.assertTrue(result["ok"])
+        self.assertIn("raw_url", result)
+        self.assertEqual(len(fake_client.comments), 1)
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_delete_issue_file_op_marks_deleted(self, mock_client_cls):
+        from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
+        import attachments as attachments_module
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+        path = _write_temp_file(".png", PNG_HEADER + b"0" * 32)
+        try:
+            attached = attachments_module.attach_file(fake_client, "owner/repo", 9, path)
+            result = gui._command_apply_change({
+                "op": "delete_issue_file",
+                "issue_number": 9,
+                "repo": "owner/repo",
+                "params": {"path": attached["path"]},
+            })
+        finally:
+            import os
+            os.unlink(path)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["deleted"])
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_list_files_command_returns_manifest(self, mock_client_cls):
+        from tests.test_attachments import FakeGitHubClient
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+
+        result = gui._command_list_files({"issue_number": 9, "repo": "owner/repo"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attachments"], [])
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_create_issue_with_attachments_appends_section_to_body(self, mock_client_cls):
+        from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = ProjectIssueGui.__new__(ProjectIssueGui)
+        path = _write_temp_file(".png", PNG_HEADER + b"0" * 32)
+        try:
+            result = gui._apply_create_issue(
+                fake_client,
+                {},
+                {
+                    "repo": "owner/repo",
+                    "title": "New issue",
+                    "body": "Original body",
+                    "attachments": [{"file_path": path, "caption": "Plan"}],
+                },
+            )
+        finally:
+            import os
+            os.unlink(path)
+
+        self.assertIn("attachments", result["issue"])
+        self.assertTrue(result["issue"]["attachments"][0]["ok"])
+        self.assertIn("## Attachments", fake_client.issue_body)
 
 
 if __name__ == "__main__":

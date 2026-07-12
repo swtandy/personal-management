@@ -1,10 +1,18 @@
+import base64
 import os
 import unittest
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("GITHUB_TOKEN", "test-token")
 
-from github_client import GitHubClient, WORK_LOG_MARKER, build_field_map, format_work_log_comment, parse_work_log_body
+from github_client import (
+    GitHubClient,
+    ManifestConflict,
+    WORK_LOG_MARKER,
+    build_field_map,
+    format_work_log_comment,
+    parse_work_log_body,
+)
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -203,6 +211,105 @@ class GitHubClientTests(unittest.TestCase):
 
         client.remove_issue_parent.assert_called_once_with("child-id", "old-parent-id")
         client.set_issue_parent.assert_called_once_with("child-id", "new-parent-id")
+
+    def test_format_work_log_comment_omits_attachments_section_when_empty(self):
+        body = format_work_log_comment(work_completed="- Did stuff")
+        self.assertNotIn("## Attachments", body)
+
+    def test_format_work_log_comment_includes_attachments_section_when_provided(self):
+        body = format_work_log_comment(work_completed="- Did stuff", attachments_markdown="![floor plan](https://example.com/a.png)")
+        self.assertIn("## Attachments", body)
+        self.assertIn("![floor plan](https://example.com/a.png)", body)
+
+    @patch("github_client.requests.get")
+    def test_get_file_contents_returns_none_on_404(self, mock_get):
+        response = Mock(status_code=404)
+        mock_get.return_value = response
+        client = GitHubClient(token="test-token")
+
+        result = client.get_file_contents("owner/repo", "issues/1/manifest.json", "gtd-assets")
+
+        self.assertIsNone(result)
+
+    @patch("github_client.requests.get")
+    def test_get_file_contents_decodes_base64_content(self, mock_get):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "sha": "blob-sha",
+            "encoding": "base64",
+            "content": base64.b64encode(b"[]").decode("ascii"),
+        }
+        mock_get.return_value = response
+        client = GitHubClient(token="test-token")
+
+        result = client.get_file_contents("owner/repo", "issues/1/manifest.json", "gtd-assets")
+
+        self.assertEqual(result, {"sha": "blob-sha", "content": b"[]"})
+
+    @patch("github_client.requests.put")
+    def test_put_file_contents_raises_manifest_conflict_on_409(self, mock_put):
+        mock_put.return_value = Mock(status_code=409)
+        client = GitHubClient(token="test-token")
+
+        with self.assertRaises(ManifestConflict):
+            client.put_file_contents("owner/repo", "issues/1/manifest.json", b"[]", "msg", "gtd-assets", sha="stale-sha")
+
+    @patch("github_client.requests.put")
+    def test_put_file_contents_returns_blob_and_commit_sha(self, mock_put):
+        response = Mock(status_code=201)
+        response.json.return_value = {"content": {"sha": "new-blob-sha"}, "commit": {"sha": "commit-sha"}}
+        mock_put.return_value = response
+        client = GitHubClient(token="test-token")
+
+        result = client.put_file_contents("owner/repo", "issues/1/file.png", b"data", "msg", "gtd-assets")
+
+        self.assertEqual(result, {"sha": "new-blob-sha", "commit_sha": "commit-sha"})
+
+    @patch("github_client.requests.get")
+    def test_ensure_orphan_branch_returns_existing_sha_without_creating(self, mock_get):
+        response = Mock(status_code=200)
+        response.json.return_value = {"object": {"sha": "existing-sha"}}
+        mock_get.return_value = response
+        client = GitHubClient(token="test-token")
+
+        sha = client.ensure_orphan_branch("owner/repo", "gtd-assets", "readme text")
+
+        self.assertEqual(sha, "existing-sha")
+
+    @patch("github_client.requests.post")
+    @patch("github_client.requests.get")
+    def test_ensure_orphan_branch_creates_branch_when_missing(self, mock_get, mock_post):
+        mock_get.return_value = Mock(status_code=404)
+
+        blob_resp = Mock(status_code=201); blob_resp.json.return_value = {"sha": "blob-sha"}
+        tree_resp = Mock(status_code=201); tree_resp.json.return_value = {"sha": "tree-sha"}
+        commit_resp = Mock(status_code=201); commit_resp.json.return_value = {"sha": "commit-sha"}
+        ref_resp = Mock(status_code=201)
+        mock_post.side_effect = [blob_resp, tree_resp, commit_resp, ref_resp]
+
+        client = GitHubClient(token="test-token")
+        sha = client.ensure_orphan_branch("owner/repo", "gtd-assets", "readme text")
+
+        self.assertEqual(sha, "commit-sha")
+        self.assertEqual(mock_post.call_count, 4)
+
+    @patch("github_client.requests.post")
+    @patch("github_client.requests.get")
+    def test_ensure_orphan_branch_handles_concurrent_ref_creation_race(self, mock_get, mock_post):
+        mock_get.side_effect = [
+            Mock(status_code=404),  # initial check: branch missing
+            Mock(status_code=200, json=Mock(return_value={"object": {"sha": "raced-in-sha"}})),  # refetch after 422
+        ]
+        blob_resp = Mock(status_code=201); blob_resp.json.return_value = {"sha": "blob-sha"}
+        tree_resp = Mock(status_code=201); tree_resp.json.return_value = {"sha": "tree-sha"}
+        commit_resp = Mock(status_code=201); commit_resp.json.return_value = {"sha": "commit-sha"}
+        ref_resp = Mock(status_code=422)
+        mock_post.side_effect = [blob_resp, tree_resp, commit_resp, ref_resp]
+
+        client = GitHubClient(token="test-token")
+        sha = client.ensure_orphan_branch("owner/repo", "gtd-assets", "readme text")
+
+        self.assertEqual(sha, "raced-in-sha")
 
 
 if __name__ == "__main__":

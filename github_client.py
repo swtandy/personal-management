@@ -2,12 +2,17 @@
 GitHub GraphQL API client for Projects V2.
 All interactions with GitHub go through this module.
 """
+import base64
 from datetime import datetime, timezone
 
 import requests
 from config import GITHUB_TOKEN, GH_GRAPHQL_URL
 
 WORK_LOG_MARKER = "<!-- gtd_mgmt:work-log:v1 -->"
+
+
+class ManifestConflict(RuntimeError):
+    """Raised when a Contents API write hits a stale-sha conflict (HTTP 409)."""
 
 
 class GitHubClient:
@@ -337,6 +342,135 @@ class GitHubClient:
         resp.raise_for_status()
         return self.parse_comment(resp.json())
 
+    def update_issue_comment(self, repo: str, comment_id: int | str, body: str) -> dict:
+        """Replace the body of an existing issue comment."""
+        if "/" not in repo:
+            raise ValueError("repo must be owner/repo")
+        url = f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}"
+        resp = requests.patch(url, json={"body": body}, headers=self.headers)
+        resp.raise_for_status()
+        return self.parse_comment(resp.json())
+
+    def get_issue(self, repo: str, issue_number: int) -> dict:
+        """Fetch a raw issue (including body) via REST."""
+        if "/" not in repo:
+            raise ValueError("repo must be owner/repo")
+        url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
+        resp = requests.get(url, headers=self.headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_repo_visibility(self, repo: str) -> bool:
+        """Return True if the repo is private."""
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}"
+        resp = requests.get(url, headers=self.headers)
+        resp.raise_for_status()
+        return bool(resp.json().get("private"))
+
+    def get_branch_sha(self, repo: str, branch: str) -> str | None:
+        """Return the head commit sha for a branch, or None if it doesn't exist."""
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/git/ref/heads/{branch}"
+        resp = requests.get(url, headers=self.headers)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()["object"]["sha"]
+
+    def ensure_orphan_branch(self, repo: str, branch: str, readme_text: str) -> str:
+        """Create an orphan branch with an initial README commit if it doesn't exist yet.
+
+        Race-safe: if another process creates the branch concurrently, the 422 from
+        the ref-create call is treated as success and the existing branch is used.
+        """
+        existing = self.get_branch_sha(repo, branch)
+        if existing:
+            return existing
+
+        owner, repo_name = split_repo(repo)
+        base = f"https://api.github.com/repos/{owner}/{repo_name}/git"
+
+        blob_resp = requests.post(f"{base}/blobs", json={"content": readme_text, "encoding": "utf-8"}, headers=self.headers)
+        blob_resp.raise_for_status()
+        blob_sha = blob_resp.json()["sha"]
+
+        tree_resp = requests.post(
+            f"{base}/trees",
+            json={"tree": [{"path": "README.md", "mode": "100644", "type": "blob", "sha": blob_sha}]},
+            headers=self.headers,
+        )
+        tree_resp.raise_for_status()
+        tree_sha = tree_resp.json()["sha"]
+
+        commit_resp = requests.post(
+            f"{base}/commits",
+            json={"message": f"Initialize {branch} branch", "tree": tree_sha, "parents": []},
+            headers=self.headers,
+        )
+        commit_resp.raise_for_status()
+        commit_sha = commit_resp.json()["sha"]
+
+        ref_resp = requests.post(
+            f"{base}/refs",
+            json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
+            headers=self.headers,
+        )
+        if ref_resp.status_code == 422:
+            existing = self.get_branch_sha(repo, branch)
+            if existing:
+                return existing
+        ref_resp.raise_for_status()
+        return commit_sha
+
+    def get_file_contents(self, repo: str, path: str, ref: str) -> dict | None:
+        """Return {"sha": blob_sha, "content": bytes} for a file, or None if missing."""
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path}"
+        resp = requests.get(url, params={"ref": ref}, headers=self.headers)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("encoding") == "base64":
+            content = base64.b64decode(data["content"])
+        else:
+            content = str(data.get("content") or "").encode("utf-8")
+        return {"sha": data["sha"], "content": content}
+
+    def put_file_contents(
+        self, repo: str, path: str, content: bytes, message: str, branch: str, sha: str | None = None,
+    ) -> dict:
+        """Create or update a file via the Contents API. Returns {"sha", "commit_sha"}.
+
+        Raises ManifestConflict on a 409 (stale sha) so callers can refetch and retry.
+        """
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path}"
+        payload = {
+            "message": message,
+            "content": base64.b64encode(content).decode("ascii"),
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        resp = requests.put(url, json=payload, headers=self.headers)
+        if resp.status_code == 409:
+            raise ManifestConflict(f"conflict writing {path} (stale sha)")
+        resp.raise_for_status()
+        data = resp.json()
+        return {"sha": data["content"]["sha"], "commit_sha": data["commit"]["sha"]}
+
+    def delete_file_contents(self, repo: str, path: str, message: str, branch: str, sha: str) -> dict:
+        """Delete a file via the Contents API."""
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path}"
+        resp = requests.delete(
+            url, json={"message": message, "sha": sha, "branch": branch}, headers=self.headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def update_issue_body(self, repo: str, issue_number: int, body: str) -> dict:
         """Replace the body of a GitHub issue via PATCH."""
         if "/" not in repo:
@@ -369,6 +503,7 @@ class GitHubClient:
         related_local_workspaces: str = "",
         related_github_repos: str = "",
         useful_context: str = "",
+        attachments_markdown: str = "",
     ) -> dict:
         """Append a structured GTD work-log comment and return the created comment."""
         body = format_work_log_comment(
@@ -381,6 +516,7 @@ class GitHubClient:
             related_local_workspaces=related_local_workspaces,
             related_github_repos=related_github_repos,
             useful_context=useful_context,
+            attachments_markdown=attachments_markdown,
         )
         return self.add_issue_comment(repo, issue_number, body)
 
@@ -462,10 +598,11 @@ def format_work_log_comment(
     related_local_workspaces: str = "",
     related_github_repos: str = "",
     useful_context: str = "",
+    attachments_markdown: str = "",
 ) -> str:
     """Build a structured comment optimized for future resume prompts."""
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return "\n".join([
+    lines = [
         WORK_LOG_MARKER,
         "",
         f"_Logged by `gtd_mgmt` at {timestamp}_",
@@ -496,7 +633,10 @@ def format_work_log_comment(
         "",
         "## Useful Context",
         _clean_section(useful_context),
-    ])
+    ]
+    if attachments_markdown.strip():
+        lines += ["", "## Attachments", attachments_markdown.strip()]
+    return "\n".join(lines)
 
 
 def parse_work_log_body(body: str) -> dict[str, list[str]]:

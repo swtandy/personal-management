@@ -46,8 +46,9 @@ The MCP server (`agents/gtd_mgmt_mcp_server.py`) is the only entry point — the
 ```
 config.py              ← centralised tunables (GITHUB_USER, GITHUB_PROJECT_NUMBER, etc.)
 github_client.py       ← GraphQL + REST API client, work-log parser
+attachments.py         ← file-attachment validation, manifest, and upload/delete logic (gtd-assets branch)
 agents/
-  gtd_mgmt_mcp_server.py  ← 24-tool FastMCP server (mediates through GUI)
+  gtd_mgmt_mcp_server.py  ← 28-tool FastMCP server (mediates through GUI)
   project_gui.py           ← Tkinter read-only GUI (auto-launched, optional)
 utils/                 ← helpers (currently empty)
 ```
@@ -71,17 +72,21 @@ The GUI (`project_gui.py`) acts as a local data cache for the MCP server. It lau
 | `get_latest_work_log(repo, issue_number)` | Parse latest structured work-log comment |
 | `resume_project(query)` | Resume by text query (returns candidates) |
 | `create_resume_handoff(repo, issue_number)` | Generate workdown file + post as GitHub comment |
-| `append_work_log(repo, issue_number, ...)` | Add structured work-log comment with all GTD fields |
-| `add_comment(repo, issue_number, body)` | Post a plain comment |
+| `append_work_log(repo, issue_number, ..., attachments)` | Add structured work-log comment with all GTD fields; optional file attachments |
+| `add_comment(repo, issue_number, body, attachments)` | Post a plain comment; optional file attachments |
 | `update_issue_body(repo, issue_number, body)` | Rewrite issue description |
-| `create_issue(repo, title, body, labels, status, priority)` | Create issue, add to Project, set fields |
-| `capture_issue(repo, title, ...)` | Capture inbox item with source context |
+| `create_issue(repo, title, body, labels, status, priority, attachments)` | Create issue, add to Project, set fields |
+| `capture_issue(repo, title, ..., attachments)` | Capture inbox item with source context |
 | `add_labels(issue_number, repo, labels)` | Ensure and apply labels |
 | `set_project_field(issue_number, repo, field_name, option_name)` | Set Status/Priority/When via GraphQL |
 | `set_issue_parent(child_issue_number, child_repo, parent_issue_number, parent_repo)` | Set sub-issue hierarchy |
 | `organize_issue(issue_number, repo, ...)` | Combined label/field/parent update in one call |
 | `bulk_organize_issues(items, ..., dry_run)` | Batch updates — always dry_run=True first |
 | `close_issue(repo, issue_number)` | Mark issue closed |
+| `attach_file_to_issue(issue_number, file_path, repo, caption, mode)` | Upload a file to the `gtd-assets` branch and embed/link it on an issue |
+| `list_issue_files(issue_number, repo)` | List an issue's attachment manifest (incl. superseded/deleted) |
+| `update_issue_file(issue_number, path, file_path, repo, caption, mode)` | Replace an attachment, preserving history |
+| `delete_issue_file(issue_number, path, repo, handle_references)` | Delete an attachment; optionally annotate referencing comments |
 | `gui_command(command)` | Direct HTTP API to GUI (debugging) |
 | `stop_gui()` | Terminate GUI process |
 
@@ -142,6 +147,7 @@ Or just run `bash scripts/sync_skills.sh` — it updates the desktop config auto
 - [x] `plugins/gtd/` plugin structure and `.mcp.json` project-scoped auto-registration
 - [x] `[Scott T] Inbox` created as issue #70; wired up in MCP server + all skill files
 - [x] Areas of Focus defined (#71–#76); existing EPICs re-parented; skill files updated
+- [x] File attachments (`attachments.py`, orphan `gtd-assets` branch, 4 new MCP tools + attachments param on add_comment/append_work_log/create_issue/capture_issue) — 2026-07-12
 
 ### Areas Of Focus
 

@@ -899,10 +899,15 @@ def append_work_log(
     related_local_workspaces: str = "",
     related_github_repos: str = "",
     useful_context: str = "",
+    attachments: list[dict] | None = None,
     launch_if_needed: bool = True,
     wait: bool = True,
 ) -> str:
-    """Append a structured gtd_mgmt work-log comment to an issue and refresh the GUI."""
+    """Append a structured gtd_mgmt work-log comment to an issue and refresh the GUI.
+
+    attachments: optional list of {"file_path": "/abs/path", "caption": "optional"} to
+    upload and embed under a new '## Attachments' section in the same work-log comment.
+    """
     _ensure_gui(launch_if_needed)
     payload = {
         "op": "append_work_log",
@@ -918,16 +923,117 @@ def append_work_log(
             "related_local_workspaces": related_local_workspaces,
             "related_github_repos": related_github_repos,
             "useful_context": useful_context,
+            "attachments": attachments or [],
         },
     }
-    return _post_apply_change(payload, timeout=30.0, wait=wait)
+    return _post_apply_change(payload, timeout=60.0, wait=wait)
 
 
 @mcp.tool()
-def add_comment(issue_number: int, body: str, repo: str = "", launch_if_needed: bool = True, wait: bool = True) -> str:
-    """Append a plain comment to an issue and refresh the GUI."""
+def add_comment(
+    issue_number: int,
+    body: str,
+    repo: str = "",
+    attachments: list[dict] | None = None,
+    launch_if_needed: bool = True,
+    wait: bool = True,
+) -> str:
+    """Append a plain comment to an issue and refresh the GUI.
+
+    attachments: optional list of {"file_path": "/abs/path", "caption": "optional"} to
+    upload and embed under a new '## Attachments' section in the same comment.
+    """
     _ensure_gui(launch_if_needed)
-    payload = {"op": "add_comment", "issue_number": issue_number, "repo": repo, "params": {"body": body}}
+    payload = {
+        "op": "add_comment",
+        "issue_number": issue_number,
+        "repo": repo,
+        "params": {"body": body, "attachments": attachments or []},
+    }
+    return _post_apply_change(payload, timeout=60.0, wait=wait)
+
+
+@mcp.tool()
+def attach_file_to_issue(
+    issue_number: int,
+    file_path: str,
+    repo: str = "",
+    caption: str = "",
+    mode: str = "comment",
+    comment_text: str = "",
+    name: str = "",
+    launch_if_needed: bool = True,
+    wait: bool = True,
+) -> str:
+    """Upload a local file to an issue on the gtd-assets branch and embed/link it.
+
+    mode: "comment" (default, posts a new comment embedding the file), "body_append"
+    (appends to the issue body instead), or "none" (upload only, return the URL).
+    """
+    _ensure_gui(launch_if_needed)
+    payload = {
+        "op": "attach_file_to_issue",
+        "issue_number": issue_number,
+        "repo": repo,
+        "params": {
+            "file_path": file_path,
+            "caption": caption,
+            "mode": mode,
+            "comment_text": comment_text,
+            "name": name,
+        },
+    }
+    return _post_apply_change(payload, timeout=60.0, wait=wait)
+
+
+@mcp.tool()
+def list_issue_files(issue_number: int, repo: str = "", launch_if_needed: bool = True) -> str:
+    """List all attachments recorded in an issue's manifest, including superseded/deleted entries."""
+    _ensure_gui(launch_if_needed)
+    params = urllib.parse.urlencode({"n": issue_number, "repo": repo})
+    return _json(_request_json("GET", f"/list-files?{params}", timeout=30.0))
+
+
+@mcp.tool()
+def update_issue_file(
+    issue_number: int,
+    path: str,
+    file_path: str,
+    repo: str = "",
+    caption: str = "",
+    mode: str = "comment",
+    launch_if_needed: bool = True,
+    wait: bool = True,
+) -> str:
+    """Replace an issue attachment with a new file, preserving history (old path -> new path)."""
+    _ensure_gui(launch_if_needed)
+    payload = {
+        "op": "update_issue_file",
+        "issue_number": issue_number,
+        "repo": repo,
+        "params": {"path": path, "file_path": file_path, "caption": caption, "mode": mode},
+    }
+    return _post_apply_change(payload, timeout=60.0, wait=wait)
+
+
+@mcp.tool()
+def delete_issue_file(
+    issue_number: int,
+    path: str,
+    repo: str = "",
+    handle_references: str = "warn",
+    launch_if_needed: bool = True,
+    wait: bool = True,
+) -> str:
+    """Delete an issue attachment. handle_references: "warn" (default, lists affected comments)
+    or "annotate" (also appends a dead-link notice to those comments)."""
+    _ensure_gui(launch_if_needed)
+    payload = {
+        "op": "delete_issue_file",
+        "issue_number": issue_number,
+        "repo": repo,
+        "params": {"path": path, "handle_references": handle_references},
+    }
     return _post_apply_change(payload, timeout=30.0, wait=wait)
 
 
@@ -947,10 +1053,15 @@ def create_issue(
     labels: list[str] | None = None,
     status: str = "Backlog",
     priority: str = "",
+    attachments: list[dict] | None = None,
     launch_if_needed: bool = True,
     wait: bool = True,
 ) -> str:
-    """Create an issue and add it to the Project. Invalid optional fields return warnings."""
+    """Create an issue and add it to the Project. Invalid optional fields return warnings.
+
+    attachments: optional list of {"file_path": "/abs/path", "caption": "optional"} uploaded
+    to the new issue and appended as a '## Attachments' section on its body.
+    """
     _ensure_gui(launch_if_needed)
     payload = {
         "op": "create_issue",
@@ -961,6 +1072,7 @@ def create_issue(
             "labels": labels or [],
             "status": status,
             "priority": priority,
+            "attachments": attachments or [],
         },
     }
     return _post_apply_change(payload, timeout=60.0, wait=wait)
@@ -980,10 +1092,15 @@ def capture_issue(
     source_label: str = "",
     next_action: str = "",
     waiting_for: str = "",
+    attachments: list[dict] | None = None,
     launch_if_needed: bool = True,
     wait: bool = True,
 ) -> str:
-    """Capture source context as an organized GitHub issue. Optional field failures return warnings."""
+    """Capture source context as an organized GitHub issue. Optional field failures return warnings.
+
+    attachments: optional list of {"file_path": "/abs/path", "caption": "optional"} uploaded
+    to the new issue and appended as a '## Attachments' section on its body.
+    """
     _ensure_gui(launch_if_needed)
     payload = {
         "op": "capture_issue",
@@ -1000,6 +1117,7 @@ def capture_issue(
             "source_label": source_label,
             "next_action": next_action,
             "waiting_for": waiting_for,
+            "attachments": attachments or [],
         },
     }
     return _post_apply_change(payload, timeout=60.0, wait=wait)
