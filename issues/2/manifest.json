@@ -9,5 +9,16 @@
     "added_at": "2026-07-12T18:07:28Z",
     "added_by": "gtd_mgmt",
     "git_sha": "c8b08b9dd34cae8f6783db2fe94207438a111464"
+  },
+  {
+    "path": "issues/2/deck-furniture-layout-6c216383.png",
+    "original_name": "deck_furniture_layout.png",
+    "caption": "Detail sheet \u2014 Large Conversation Area (seats 9) and Primary Dining Area (seats 8), to scale with clearances",
+    "content_sha256": "6c216383e0cc73f855f33b88d9414f196151b4a7e53f09ac165d8b91864890dd",
+    "size_bytes": 119931,
+    "mime": "image/png",
+    "added_at": "2026-07-12T18:07:50Z",
+    "added_by": "gtd_mgmt",
+    "git_sha": "9dc5cd8defb2d29ffb4dbb8c091bef271a771071"
   }
 ]
