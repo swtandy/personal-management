@@ -232,6 +232,40 @@ class CommandHandler(http.server.BaseHTTPRequestHandler):
                 "data": {"issue_number": query.get("n", [None])[0], "repo": query.get("repo", [""])[0]},
             }))
             return
+        if path == "/get-file":
+            self._send_json(self._dispatch({
+                "cmd": "get-file",
+                "data": {
+                    "issue_number": query.get("n", [None])[0],
+                    "repo": query.get("repo", [""])[0],
+                    "original_name": query.get("original_name", [""])[0],
+                    "path": query.get("path", [""])[0],
+                    "content_sha256": query.get("content_sha256", [""])[0],
+                    "git_sha": query.get("git_sha", [""])[0],
+                    "output": query.get("output", ["base64"])[0],
+                    "dest_path": query.get("dest_path", [""])[0],
+                    "overwrite": query.get("overwrite", ["false"])[0],
+                    "include_superseded": query.get("include_superseded", ["false"])[0],
+                    "include_deleted": query.get("include_deleted", ["false"])[0],
+                },
+            }))
+            return
+        if path == "/get-files":
+            self._send_json(self._dispatch({
+                "cmd": "get-files",
+                "data": {
+                    "issue_number": query.get("n", [None])[0],
+                    "repo": query.get("repo", [""])[0],
+                    "dest_dir": query.get("dest_dir", [""])[0],
+                    "mime_prefix": query.get("mime_prefix", [""])[0],
+                    "include_superseded": query.get("include_superseded", ["false"])[0],
+                    "include_deleted": query.get("include_deleted", ["false"])[0],
+                    "overwrite": query.get("overwrite", ["false"])[0],
+                    "fail_fast": query.get("fail_fast", ["false"])[0],
+                    "max_total_bytes": query.get("max_total_bytes", [str(attachments.DEFAULT_MAX_BATCH_RETRIEVAL_BYTES)])[0],
+                },
+            }))
+            return
         self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, 404)
 
     def do_POST(self) -> None:
@@ -539,6 +573,10 @@ class ProjectIssueGui(ctk.CTk):
                 return self._command_latest_work_log(data)
             if name == "list-files":
                 return self._command_list_files(data)
+            if name == "get-file":
+                return self._command_get_file(data)
+            if name == "get-files":
+                return self._command_get_files(data)
             if name == "apply-change":
                 return self._command_apply_change(data)
             return {"ok": False, "error": f"unknown command: {name}"}
@@ -678,6 +716,40 @@ class ProjectIssueGui(ctk.CTk):
     def _command_list_files(self, data: dict[str, Any]) -> dict[str, Any]:
         item = self._resolve_issue(data)
         return attachments.list_files(GitHubClient(), item["repo"], int(item["number"]))
+
+    def _command_get_file(self, data: dict[str, Any]) -> dict[str, Any]:
+        item = self._resolve_issue(data)
+        truthy = lambda value: str(value or "").lower() in {"1", "true", "yes", "on"}
+        return attachments.get_file(
+            GitHubClient(), item["repo"], int(item["number"]),
+            original_name=str(data.get("original_name") or ""),
+            path=str(data.get("path") or ""),
+            content_sha256=str(data.get("content_sha256") or ""),
+            git_sha=str(data.get("git_sha") or ""),
+            output=str(data.get("output") or "base64"),
+            dest_path=str(data.get("dest_path") or ""),
+            overwrite=truthy(data.get("overwrite")),
+            include_superseded=truthy(data.get("include_superseded")),
+            include_deleted=truthy(data.get("include_deleted")),
+        )
+
+    def _command_get_files(self, data: dict[str, Any]) -> dict[str, Any]:
+        item = self._resolve_issue(data)
+        truthy = lambda value: str(value or "").lower() in {"1", "true", "yes", "on"}
+        try:
+            max_total_bytes = int(data.get("max_total_bytes") or attachments.DEFAULT_MAX_BATCH_RETRIEVAL_BYTES)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": {"code": "invalid_batch_limit", "message": "max_total_bytes must be an integer"}}
+        return attachments.get_files(
+            GitHubClient(), item["repo"], int(item["number"]),
+            dest_dir=str(data.get("dest_dir") or ""),
+            mime_prefix=str(data.get("mime_prefix") or ""),
+            include_superseded=truthy(data.get("include_superseded")),
+            include_deleted=truthy(data.get("include_deleted")),
+            overwrite=truthy(data.get("overwrite")),
+            fail_fast=truthy(data.get("fail_fast")),
+            max_total_bytes=max_total_bytes,
+        )
 
     def _command_apply_change(self, data: dict[str, Any]) -> dict[str, Any]:
         op = str(data.get("op") or "").strip()

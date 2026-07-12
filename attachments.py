@@ -9,9 +9,12 @@ See gtd_mgmt_file_attachments_spec.md for the full design.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,8 @@ README_TEXT = (
 _MB = 1024 * 1024
 HARD_CEILING_BYTES = 50 * _MB
 DEFAULT_MAX_TOTAL_PER_ISSUE_BYTES = 200 * _MB
+MAX_INLINE_RETRIEVAL_BYTES = 5 * _MB
+DEFAULT_MAX_BATCH_RETRIEVAL_BYTES = 200 * _MB
 
 BLOCKED_EXTENSIONS = {"exe", "dll", "sh", "bat", "ps1", "app", "dmg", "msi", "jar"}
 TEXT_SCAN_EXTENSIONS = {"md", "txt", "csv"}
@@ -332,6 +337,270 @@ def list_files(client: GitHubClient, repo: str, issue_number: int) -> dict[str, 
         item["deleted"] = bool(entry.get("deleted"))
         attachments.append(item)
     return {"ok": True, "repo": repo, "issue_number": issue_number, "count": len(attachments), "attachments": attachments}
+
+
+def _retrieval_error(code: str, message: str, **details: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": False, "error": {"code": code, "message": message}}
+    if details:
+        result["error"]["details"] = details
+    return result
+
+
+def _select_file(
+    entries: list[dict[str, Any]],
+    selectors: dict[str, str],
+    *,
+    include_superseded: bool,
+    include_deleted: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    supplied = {key: value for key, value in selectors.items() if value}
+    if len(supplied) != 1:
+        return None, _retrieval_error(
+            "invalid_selector",
+            "exactly one of original_name, path, content_sha256, or git_sha is required",
+        )
+
+    key, value = next(iter(supplied.items()))
+    matches = [entry for entry in entries if str(entry.get(key) or "") == value]
+    visible = [
+        entry for entry in matches
+        if (include_superseded or not entry.get("superseded_by"))
+        and (include_deleted or not entry.get("deleted"))
+    ]
+    candidates = [
+        {"original_name": entry.get("original_name"), "path": entry.get("path")}
+        for entry in entries
+    ]
+    if not visible:
+        code = "attachment_deleted" if matches and any(e.get("deleted") for e in matches) else "attachment_not_found"
+        return None, _retrieval_error(code, f"no retrievable attachment matched {key}={value!r}", candidates=candidates)
+    if len(visible) > 1:
+        return None, _retrieval_error(
+            "ambiguous_attachment",
+            f"multiple attachments matched {key}={value!r}; select by path, content_sha256, or git_sha",
+            candidates=[{"original_name": e.get("original_name"), "path": e.get("path")} for e in visible],
+        )
+    return visible[0], None
+
+
+def _validate_retrieval_entry(entry: dict[str, Any], issue_number: int) -> dict[str, Any] | None:
+    """Return a structured error when required retrieval metadata is malformed."""
+    path = entry.get("path")
+    original_name = entry.get("original_name")
+    content_sha256 = entry.get("content_sha256")
+    git_sha = entry.get("git_sha")
+    size_bytes = entry.get("size_bytes")
+    mime = entry.get("mime")
+    if not isinstance(path, str) or not path:
+        return _retrieval_error("invalid_manifest", "attachment manifest path is missing or invalid")
+    expected_prefix = f"issues/{issue_number}/"
+    if not path.startswith(expected_prefix) or ".." in Path(path).parts:
+        return _retrieval_error("invalid_manifest_path", "attachment path is outside the issue attachment directory")
+    if not isinstance(original_name, str) or not original_name or Path(original_name).name != original_name:
+        return _retrieval_error("invalid_manifest", "attachment original_name is missing or unsafe", path=path)
+    if not isinstance(content_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
+        return _retrieval_error("invalid_manifest", "attachment content_sha256 is missing or invalid", path=path)
+    if not isinstance(git_sha, str) or not re.fullmatch(r"[0-9A-Za-z-]{4,64}", git_sha):
+        return _retrieval_error("invalid_manifest", "attachment git_sha is missing or invalid", path=path)
+    if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+        return _retrieval_error("invalid_manifest", "attachment size_bytes is missing or invalid", path=path)
+    if not isinstance(mime, str) or not mime:
+        return _retrieval_error("invalid_manifest", "attachment mime is missing or invalid", path=path)
+    return None
+
+
+def get_file(
+    client: GitHubClient,
+    repo: str,
+    issue_number: int,
+    *,
+    original_name: str = "",
+    path: str = "",
+    content_sha256: str = "",
+    git_sha: str = "",
+    output: str = "base64",
+    dest_path: str = "",
+    overwrite: bool = False,
+    include_superseded: bool = False,
+    include_deleted: bool = False,
+    max_inline_bytes: int = MAX_INLINE_RETRIEVAL_BYTES,
+) -> dict[str, Any]:
+    """Retrieve and verify one attachment from the authenticated gtd-assets store."""
+    if output not in {"base64", "write"}:
+        return _retrieval_error("invalid_output", "output must be 'base64' or 'write'")
+    if output == "write" and not dest_path:
+        return _retrieval_error("invalid_destination", "dest_path is required when output is 'write'")
+
+    manifest = get_manifest(client, repo, issue_number)
+    entry, error = _select_file(
+        manifest["entries"],
+        {
+            "original_name": original_name.strip(),
+            "path": path.strip(),
+            "content_sha256": content_sha256.strip(),
+            "git_sha": git_sha.strip(),
+        },
+        include_superseded=include_superseded,
+        include_deleted=include_deleted,
+    )
+    if error:
+        return error
+    assert entry is not None
+
+    validation_error = _validate_retrieval_entry(entry, issue_number)
+    if validation_error:
+        return validation_error
+    manifest_path = str(entry.get("path") or "")
+    expected_sha256 = str(entry.get("content_sha256") or "")
+    stored = client.get_file_contents(repo, manifest_path, GTD_ASSETS_BRANCH)
+    data = stored["content"] if stored is not None else None
+    warnings: list[dict[str, str]] = []
+    if data is None or hashlib.sha256(data).hexdigest() != expected_sha256:
+        blob_sha = str(entry.get("git_sha") or "")
+        blob = client.get_git_blob(repo, blob_sha) if blob_sha else None
+        if blob is not None:
+            if data is not None:
+                warnings.append({"code": "working_copy_stale", "message": "used the stored Git blob because the branch copy did not verify"})
+            data = blob
+    if data is None:
+        return _retrieval_error("blob_unavailable", "attachment bytes are unavailable from the gtd-assets store")
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if not expected_sha256 or actual_sha256 != expected_sha256:
+        return _retrieval_error(
+            "hash_mismatch", "retrieved attachment did not match its manifest SHA-256",
+            expected_sha256=expected_sha256, actual_sha256=actual_sha256,
+        )
+    expected_size = int(entry["size_bytes"])
+    if len(data) != expected_size:
+        return _retrieval_error(
+            "size_mismatch", "retrieved attachment did not match its manifest size",
+            expected_size_bytes=expected_size, actual_size_bytes=len(data),
+        )
+
+    attachment = dict(entry)
+    attachment["superseded"] = bool(entry.get("superseded_by"))
+    attachment["deleted"] = bool(entry.get("deleted"))
+    result: dict[str, Any] = {
+        "ok": True, "issue_number": issue_number, "repo": repo,
+        "attachment": attachment, "output": output, "verified_sha256": True, "warnings": warnings,
+    }
+    if output == "base64":
+        if len(data) > max_inline_bytes:
+            return _retrieval_error(
+                "inline_size_exceeded",
+                f"attachment exceeds the {max_inline_bytes} byte inline limit; use output='write'",
+                size_bytes=len(data), max_inline_bytes=max_inline_bytes,
+            )
+        result["content_base64"] = base64.b64encode(data).decode("ascii")
+        return result
+
+    destination = Path(dest_path).expanduser()
+    if not destination.is_absolute():
+        return _retrieval_error("invalid_destination", "dest_path must be absolute")
+    if destination.is_symlink():
+        return _retrieval_error("invalid_destination", "dest_path may not be a symlink")
+    if destination.exists() and not overwrite:
+        return _retrieval_error("destination_exists", "dest_path already exists; pass overwrite=true to replace it")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.parent.is_symlink():
+        return _retrieval_error("invalid_destination", "dest_path parent may not be a symlink")
+    fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    result["dest_path"] = str(destination)
+    return result
+
+
+def get_files(
+    client: GitHubClient,
+    repo: str,
+    issue_number: int,
+    dest_dir: str,
+    *,
+    mime_prefix: str = "",
+    include_superseded: bool = False,
+    include_deleted: bool = False,
+    overwrite: bool = False,
+    fail_fast: bool = False,
+    max_total_bytes: int = DEFAULT_MAX_BATCH_RETRIEVAL_BYTES,
+) -> dict[str, Any]:
+    """Retrieve eligible issue attachments into a directory with per-file results."""
+    destination = Path(dest_dir).expanduser()
+    if not destination.is_absolute():
+        return _retrieval_error("invalid_destination", "dest_dir must be absolute")
+    if destination.is_symlink():
+        return _retrieval_error("invalid_destination", "dest_dir may not be a symlink")
+    if not isinstance(max_total_bytes, int) or isinstance(max_total_bytes, bool) or max_total_bytes <= 0:
+        return _retrieval_error("invalid_batch_limit", "max_total_bytes must be a positive integer")
+
+    manifest = get_manifest(client, repo, issue_number)
+    eligible = [
+        entry for entry in manifest["entries"]
+        if (include_superseded or not entry.get("superseded_by"))
+        and (include_deleted or not entry.get("deleted"))
+        and (not mime_prefix or str(entry.get("mime") or "").startswith(mime_prefix))
+    ]
+    names: dict[str, list[str]] = {}
+    for entry in eligible:
+        name = str(entry.get("original_name") or "")
+        names.setdefault(name, []).append(str(entry.get("path") or ""))
+    collisions = {name: paths for name, paths in names.items() if name and len(paths) > 1}
+    if collisions:
+        return _retrieval_error(
+            "destination_name_collision",
+            "multiple selected attachments have the same original_name",
+            collisions=collisions,
+        )
+
+    declared_total = sum(
+        entry.get("size_bytes") if isinstance(entry.get("size_bytes"), int) else 0
+        for entry in eligible
+    )
+    if declared_total > max_total_bytes:
+        return _retrieval_error(
+            "batch_size_exceeded", "selected attachments exceed the batch byte limit",
+            declared_total_bytes=declared_total, max_total_bytes=max_total_bytes,
+        )
+
+    destination.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    succeeded = 0
+    for entry in eligible:
+        entry_error = _validate_retrieval_entry(entry, issue_number)
+        if entry_error:
+            result = {"original_name": entry.get("original_name"), "path": entry.get("path"), **entry_error}
+        else:
+            result = get_file(
+                client, repo, issue_number,
+                path=str(entry["path"]), output="write",
+                dest_path=str(destination / str(entry["original_name"])), overwrite=overwrite,
+                include_superseded=include_superseded, include_deleted=include_deleted,
+            )
+        results.append(result)
+        if result.get("ok"):
+            succeeded += 1
+        elif fail_fast:
+            break
+
+    return {
+        "ok": succeeded == len(eligible),
+        "repo": repo,
+        "issue_number": issue_number,
+        "dest_dir": str(destination),
+        "selected_count": len(eligible),
+        "processed_count": len(results),
+        "succeeded_count": succeeded,
+        "failed_count": len(results) - succeeded,
+        "files": results,
+        "warnings": [],
+    }
 
 
 def update_file(

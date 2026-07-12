@@ -68,6 +68,8 @@ Real files (screenshots, floor plans, PDFs, spreadsheets) can be landed directly
 
 - `attach_file_to_issue(issue_number, file_path, repo, caption, mode)` uploads a local file to the issue's `gtd-assets` manifest and embeds/links it (`mode="comment"` posts a comment, `"body_append"` appends to the issue body, `"none"` uploads only and returns the URL).
 - `list_issue_files(issue_number, repo)` lists everything attached to an issue, including superseded/deleted entries.
+- `get_issue_file(issue_number, original_name|path|content_sha256|git_sha, output, dest_path, repo)` retrieves one attachment with SHA-256 verification. Use exactly one selector; `output="base64"` is limited to 5 MiB, while `output="write"` requires an absolute `dest_path` and refuses replacement unless `overwrite=true`.
+- `get_issue_files(issue_number, dest_dir, mime_prefix, repo)` retrieves a filtered batch into an absolute destination directory. It verifies every file, refuses filename collisions and existing destinations by default, and returns per-file results.
 - `update_issue_file(issue_number, path, file_path, repo, caption, mode)` replaces an attachment while preserving history.
 - `delete_issue_file(issue_number, path, repo, handle_references)` removes an attachment; `handle_references="annotate"` also flags comments that referenced it.
 - `add_comment`, `append_work_log`, `create_issue`, and `capture_issue` all accept an optional `attachments` list of `{"file_path": "...", "caption": "..."}` to upload and embed inline in the same call, instead of attaching separately.

@@ -246,6 +246,28 @@ class GitHubClientTests(unittest.TestCase):
 
         self.assertEqual(result, {"sha": "blob-sha", "content": b"[]"})
 
+    @patch("github_client.requests.get")
+    def test_get_git_blob_decodes_base64_content(self, mock_get):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "sha": "blob-sha",
+            "encoding": "base64",
+            "content": base64.b64encode(b"binary-data").decode("ascii"),
+        }
+        mock_get.return_value = response
+        client = GitHubClient(token="test-token")
+
+        result = client.get_git_blob("owner/repo", "blob-sha")
+
+        self.assertEqual(result, b"binary-data")
+
+    @patch("github_client.requests.get")
+    def test_get_git_blob_returns_none_on_404(self, mock_get):
+        mock_get.return_value = Mock(status_code=404)
+        client = GitHubClient(token="test-token")
+
+        self.assertIsNone(client.get_git_blob("owner/repo", "missing-sha"))
+
     @patch("github_client.requests.put")
     def test_put_file_contents_raises_manifest_conflict_on_409(self, mock_put):
         mock_put.return_value = Mock(status_code=409)

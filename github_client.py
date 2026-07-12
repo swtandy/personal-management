@@ -438,6 +438,19 @@ class GitHubClient:
             content = str(data.get("content") or "").encode("utf-8")
         return {"sha": data["sha"], "content": content}
 
+    def get_git_blob(self, repo: str, sha: str) -> bytes | None:
+        """Return an immutable Git blob by object SHA, or None when unavailable."""
+        owner, repo_name = split_repo(repo)
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/git/blobs/{sha}"
+        resp = requests.get(url, headers=self.headers)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("encoding") != "base64":
+            raise ValueError(f"unsupported Git blob encoding: {data.get('encoding')!r}")
+        return base64.b64decode(data["content"])
+
     def put_file_contents(
         self, repo: str, path: str, content: bytes, message: str, branch: str, sha: str | None = None,
     ) -> dict:

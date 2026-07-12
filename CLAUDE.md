@@ -85,6 +85,8 @@ The GUI (`project_gui.py`) acts as a local data cache for the MCP server. It lau
 | `close_issue(repo, issue_number)` | Mark issue closed |
 | `attach_file_to_issue(issue_number, file_path, repo, caption, mode)` | Upload a file to the `gtd-assets` branch and embed/link it on an issue |
 | `list_issue_files(issue_number, repo)` | List an issue's attachment manifest (incl. superseded/deleted) |
+| `get_issue_file(issue_number, selector, output, dest_path, repo)` | Retrieve and SHA-256 verify an attachment as base64 or an atomic local write |
+| `get_issue_files(issue_number, dest_dir, mime_prefix, repo)` | Retrieve and verify a filtered batch of issue attachments with per-file results |
 | `update_issue_file(issue_number, path, file_path, repo, caption, mode)` | Replace an attachment, preserving history |
 | `delete_issue_file(issue_number, path, repo, handle_references)` | Delete an attachment; optionally annotate referencing comments |
 | `gui_command(command)` | Direct HTTP API to GUI (debugging) |

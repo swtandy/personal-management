@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ class FakeGitHubClient:
 
     def __init__(self):
         self.files: dict[str, dict] = {}
+        self.blobs: dict[str, bytes] = {}
         self.branch_sha: str | None = None
         self.private = False
         self.comments: list[dict] = []
@@ -62,10 +64,14 @@ class FakeGitHubClient:
         existing = self.files.get(path)
         if sha is not None and (existing is None or existing["sha"] != sha):
             raise ManifestConflict("stale sha")
-        new_sha = f"sha-{len(self.put_calls)}-{path}"
+        new_sha = hashlib.sha1(content).hexdigest()
         self.files[path] = {"sha": new_sha, "content": content}
+        self.blobs[new_sha] = content
         self.branch_sha = f"commit-{len(self.put_calls)}"
         return {"sha": new_sha, "commit_sha": self.branch_sha}
+
+    def get_git_blob(self, repo, sha):
+        return self.blobs.get(sha)
 
     def delete_file_contents(self, repo, path, message, branch, sha):
         self.files.pop(path, None)
@@ -412,6 +418,197 @@ class ListFilesTests(unittest.TestCase):
             self.assertTrue(result["attachments"][0]["deleted"])
         finally:
             os.unlink(path)
+
+
+class GetFileTests(unittest.TestCase):
+    def setUp(self):
+        self.client = FakeGitHubClient()
+        self.source = _write_temp_file(".png", PNG_HEADER + b"retrievable-image")
+        self.attached = attachments.attach_file(
+            self.client, "owner/repo", 12, self.source, mode="none",
+        )
+
+    def tearDown(self):
+        os.unlink(self.source)
+
+    def test_retrieves_base64_by_each_unique_selector(self):
+        manifest_entry = json.loads(self.client.files["issues/12/manifest.json"]["content"])[0]
+        expected = Path(self.source).read_bytes()
+        for selector in ("original_name", "path", "content_sha256", "git_sha"):
+            with self.subTest(selector=selector):
+                result = attachments.get_file(
+                    self.client, "owner/repo", 12, **{selector: manifest_entry[selector]},
+                )
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["verified_sha256"])
+                self.assertEqual(base64.b64decode(result["content_base64"]), expected)
+
+    def test_write_is_atomic_and_refuses_overwrite_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "nested" / "retrieved.png"
+            result = attachments.get_file(
+                self.client, "owner/repo", 12,
+                path=self.attached["path"], output="write", dest_path=str(destination),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(destination.read_bytes(), Path(self.source).read_bytes())
+            duplicate = attachments.get_file(
+                self.client, "owner/repo", 12,
+                path=self.attached["path"], output="write", dest_path=str(destination),
+            )
+            self.assertEqual(duplicate["error"]["code"], "destination_exists")
+
+    def test_requires_exactly_one_selector(self):
+        result = attachments.get_file(self.client, "owner/repo", 12)
+        self.assertEqual(result["error"]["code"], "invalid_selector")
+        result = attachments.get_file(
+            self.client, "owner/repo", 12,
+            original_name=Path(self.source).name, path=self.attached["path"],
+        )
+        self.assertEqual(result["error"]["code"], "invalid_selector")
+
+    def test_missing_selector_lists_candidates(self):
+        result = attachments.get_file(self.client, "owner/repo", 12, path="issues/12/missing.png")
+        self.assertEqual(result["error"]["code"], "attachment_not_found")
+        self.assertEqual(result["error"]["details"]["candidates"][0]["path"], self.attached["path"])
+
+    def test_hash_mismatch_is_a_hard_error(self):
+        self.client.files[self.attached["path"]]["content"] = b"tampered"
+        manifest_entry = json.loads(self.client.files["issues/12/manifest.json"]["content"])[0]
+        self.client.blobs[manifest_entry["git_sha"]] = b"also-tampered"
+        result = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertEqual(result["error"]["code"], "hash_mismatch")
+
+    def test_deleted_attachment_can_be_retrieved_from_git_blob_when_requested(self):
+        expected = Path(self.source).read_bytes()
+        attachments.delete_file(self.client, "owner/repo", 12, self.attached["path"])
+        hidden = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertEqual(hidden["error"]["code"], "attachment_deleted")
+        result = attachments.get_file(
+            self.client, "owner/repo", 12, path=self.attached["path"], include_deleted=True,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(base64.b64decode(result["content_base64"]), expected)
+
+    def test_inline_size_guard(self):
+        result = attachments.get_file(
+            self.client, "owner/repo", 12, path=self.attached["path"], max_inline_bytes=1,
+        )
+        self.assertEqual(result["error"]["code"], "inline_size_exceeded")
+
+    def test_size_mismatch_is_a_hard_error(self):
+        manifest = json.loads(self.client.files["issues/12/manifest.json"]["content"])
+        manifest[0]["size_bytes"] += 1
+        self.client.files["issues/12/manifest.json"]["content"] = json.dumps(manifest).encode()
+        result = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertEqual(result["error"]["code"], "size_mismatch")
+
+    def test_invalid_manifest_metadata_is_rejected(self):
+        manifest = json.loads(self.client.files["issues/12/manifest.json"]["content"])
+        manifest[0]["content_sha256"] = "not-a-hash"
+        self.client.files["issues/12/manifest.json"]["content"] = json.dumps(manifest).encode()
+        result = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertEqual(result["error"]["code"], "invalid_manifest")
+
+    def test_invalid_manifest_path_is_rejected(self):
+        manifest = json.loads(self.client.files["issues/12/manifest.json"]["content"])
+        manifest[0]["path"] = "issues/12/../../secret.png"
+        self.client.files["issues/12/manifest.json"]["content"] = json.dumps(manifest).encode()
+        result = attachments.get_file(
+            self.client, "owner/repo", 12, path="issues/12/../../secret.png",
+        )
+        self.assertEqual(result["error"]["code"], "invalid_manifest_path")
+
+    def test_stale_branch_copy_falls_back_to_verified_blob_with_warning(self):
+        self.client.files[self.attached["path"]]["content"] = b"stale"
+        result = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["warnings"][0]["code"], "working_copy_stale")
+
+    def test_unavailable_branch_copy_and_blob_returns_error(self):
+        manifest = json.loads(self.client.files["issues/12/manifest.json"]["content"])[0]
+        self.client.files.pop(self.attached["path"])
+        self.client.blobs.pop(manifest["git_sha"])
+        result = attachments.get_file(self.client, "owner/repo", 12, path=self.attached["path"])
+        self.assertEqual(result["error"]["code"], "blob_unavailable")
+
+    def test_overwrite_true_replaces_existing_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "retrieved.png"
+            destination.write_bytes(b"old")
+            result = attachments.get_file(
+                self.client, "owner/repo", 12, path=self.attached["path"],
+                output="write", dest_path=str(destination), overwrite=True,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(destination.read_bytes(), Path(self.source).read_bytes())
+
+
+class GetFilesTests(unittest.TestCase):
+    def setUp(self):
+        self.client = FakeGitHubClient()
+        self.first = _write_temp_file("-first.png", PNG_HEADER + b"first")
+        self.second = _write_temp_file("-second.png", PNG_HEADER + b"second")
+        self.first_attached = attachments.attach_file(self.client, "owner/repo", 20, self.first, mode="none")
+        self.second_attached = attachments.attach_file(self.client, "owner/repo", 20, self.second, mode="none")
+
+    def tearDown(self):
+        os.unlink(self.first)
+        os.unlink(self.second)
+
+    def test_retrieves_all_current_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["succeeded_count"], 2)
+            self.assertEqual((Path(directory) / Path(self.first).name).read_bytes(), Path(self.first).read_bytes())
+            self.assertEqual((Path(directory) / Path(self.second).name).read_bytes(), Path(self.second).read_bytes())
+
+    def test_mime_prefix_filters_selection(self):
+        manifest = json.loads(self.client.files["issues/20/manifest.json"]["content"])
+        manifest[1]["mime"] = "application/octet-stream"
+        self.client.files["issues/20/manifest.json"]["content"] = json.dumps(manifest).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory, mime_prefix="image/")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["selected_count"], 1)
+
+    def test_duplicate_original_names_are_rejected_before_writes(self):
+        manifest = json.loads(self.client.files["issues/20/manifest.json"]["content"])
+        manifest[1]["original_name"] = manifest[0]["original_name"]
+        self.client.files["issues/20/manifest.json"]["content"] = json.dumps(manifest).encode()
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory)
+            self.assertEqual(result["error"]["code"], "destination_name_collision")
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_batch_size_limit_is_enforced_before_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory, max_total_bytes=1)
+            self.assertEqual(result["error"]["code"], "batch_size_exceeded")
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_partial_failure_continues_by_default(self):
+        self.client.files[self.first_attached["path"]]["content"] = b"bad"
+        manifest = json.loads(self.client.files["issues/20/manifest.json"]["content"])
+        first_entry = next(entry for entry in manifest if entry["path"] == self.first_attached["path"])
+        self.client.blobs[first_entry["git_sha"]] = b"also-bad"
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["processed_count"], 2)
+            self.assertEqual(result["succeeded_count"], 1)
+            self.assertEqual(result["failed_count"], 1)
+
+    def test_fail_fast_stops_after_first_failure(self):
+        self.client.files[self.first_attached["path"]]["content"] = b"bad"
+        manifest = json.loads(self.client.files["issues/20/manifest.json"]["content"])
+        first_entry = next(entry for entry in manifest if entry["path"] == self.first_attached["path"])
+        self.client.blobs[first_entry["git_sha"]] = b"also-bad"
+        with tempfile.TemporaryDirectory() as directory:
+            result = attachments.get_files(self.client, "owner/repo", 20, directory, fail_fast=True)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["processed_count"], 1)
 
 
 class AttachManyAndBuildSectionTests(unittest.TestCase):

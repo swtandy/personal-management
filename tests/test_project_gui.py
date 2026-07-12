@@ -951,6 +951,65 @@ class ApplyChangeAttachmentOpsTests(unittest.TestCase):
         self.assertEqual(result["attachments"], [])
 
     @patch("agents.project_gui.GitHubClient")
+    def test_get_file_command_returns_verified_attachment(self, mock_client_cls):
+        import attachments as attachments_module
+        from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+        path = _write_temp_file(".png", PNG_HEADER + b"retrieve")
+        try:
+            attached = attachments_module.attach_file(fake_client, "owner/repo", 9, path, mode="none")
+            result = gui._command_get_file({
+                "issue_number": 9, "repo": "owner/repo", "path": attached["path"],
+            })
+        finally:
+            import os
+            os.unlink(path)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["verified_sha256"])
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_get_files_command_writes_batch(self, mock_client_cls):
+        import attachments as attachments_module
+        import tempfile
+        from pathlib import Path
+        from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+        path = _write_temp_file(".png", PNG_HEADER + b"batch")
+        try:
+            attachments_module.attach_file(fake_client, "owner/repo", 9, path, mode="none")
+            with tempfile.TemporaryDirectory() as directory:
+                result = gui._command_get_files({
+                    "issue_number": 9, "repo": "owner/repo", "dest_dir": directory,
+                })
+                written = Path(directory, Path(path).name).read_bytes()
+        finally:
+            import os
+            os.unlink(path)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(written, PNG_HEADER + b"batch")
+
+    @patch("agents.project_gui.GitHubClient")
+    def test_get_files_command_rejects_invalid_batch_limit(self, mock_client_cls):
+        from tests.test_attachments import FakeGitHubClient
+
+        fake_client = FakeGitHubClient()
+        mock_client_cls.return_value = fake_client
+        gui = self._gui_with_issue(fake_client)
+        result = gui._command_get_files({
+            "issue_number": 9, "repo": "owner/repo", "dest_dir": "/tmp/output",
+            "max_total_bytes": "not-an-integer",
+        })
+        self.assertEqual(result["error"]["code"], "invalid_batch_limit")
+
+    @patch("agents.project_gui.GitHubClient")
     def test_create_issue_with_attachments_appends_section_to_body(self, mock_client_cls):
         from tests.test_attachments import FakeGitHubClient, PNG_HEADER, _write_temp_file
 

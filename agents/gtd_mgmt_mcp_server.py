@@ -995,6 +995,61 @@ def list_issue_files(issue_number: int, repo: str = "", launch_if_needed: bool =
 
 
 @mcp.tool()
+def get_issue_file(
+    issue_number: int,
+    original_name: str = "",
+    path: str = "",
+    content_sha256: str = "",
+    git_sha: str = "",
+    output: str = "base64",
+    dest_path: str = "",
+    overwrite: bool = False,
+    include_superseded: bool = False,
+    include_deleted: bool = False,
+    repo: str = "",
+    launch_if_needed: bool = True,
+) -> str:
+    """Retrieve one verified issue attachment by exactly one selector.
+
+    output is "base64" or "write". write requires an absolute dest_path and
+    refuses replacement unless overwrite is true.
+    """
+    _ensure_gui(launch_if_needed)
+    params = urllib.parse.urlencode({
+        "n": issue_number, "repo": repo, "original_name": original_name, "path": path,
+        "content_sha256": content_sha256, "git_sha": git_sha, "output": output,
+        "dest_path": dest_path, "overwrite": str(overwrite).lower(),
+        "include_superseded": str(include_superseded).lower(),
+        "include_deleted": str(include_deleted).lower(),
+    })
+    return _json(_request_json("GET", f"/get-file?{params}", timeout=60.0))
+
+
+@mcp.tool()
+def get_issue_files(
+    issue_number: int,
+    dest_dir: str,
+    mime_prefix: str = "",
+    include_superseded: bool = False,
+    include_deleted: bool = False,
+    overwrite: bool = False,
+    fail_fast: bool = False,
+    max_total_bytes: int = 209715200,
+    repo: str = "",
+    launch_if_needed: bool = True,
+) -> str:
+    """Retrieve eligible issue attachments into dest_dir with per-file results."""
+    _ensure_gui(launch_if_needed)
+    params = urllib.parse.urlencode({
+        "n": issue_number, "repo": repo, "dest_dir": dest_dir, "mime_prefix": mime_prefix,
+        "include_superseded": str(include_superseded).lower(),
+        "include_deleted": str(include_deleted).lower(), "overwrite": str(overwrite).lower(),
+        "fail_fast": str(fail_fast).lower(), "max_total_bytes": max_total_bytes,
+    })
+    return _json(_request_json("GET", f"/get-files?{params}", timeout=120.0))
+
+
+@mcp.tool()
 def update_issue_file(
     issue_number: int,
     path: str,
