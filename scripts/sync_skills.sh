@@ -28,6 +28,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Codex MCP config  →  ~/.codex/config.toml
 # ---------------------------------------------------------------------------
+codex_home="${CODEX_HOME:-$HOME/.codex}"
 codex_config="$codex_home/config.toml"
 mkdir -p "$codex_home"
 CODEX_CONFIG="$codex_config" REPO_ROOT="$repo_root" "$python_bin" <<'PY'
@@ -259,7 +260,7 @@ cowork_rpm_gtd=$(find "$HOME/Library/Application Support/Claude/local-agent-mode
     -type d -name "gtd-workflow" 2>/dev/null \
     | grep "/rpm/" \
     | sed 's|/skills/gtd-workflow||' \
-    | head -1)
+    | head -1) || true
 
 if [[ -n "$cowork_rpm_gtd" ]]; then
     cp -r "$repo_root/plugins/gtd/skills/." "$cowork_rpm_gtd/skills/"
